@@ -217,6 +217,7 @@ class AuthManager:
         self,
         name: str,
         group_ids: list[str] | None = None,
+        local_only: bool | None = None,
     ) -> models.User:
         """Create a system user."""
         user = await self._store.async_create_user(
@@ -224,6 +225,7 @@ class AuthManager:
             system_generated=True,
             is_active=True,
             group_ids=group_ids or [],
+            local_only=local_only,
         )
 
         self.hass.bus.async_fire(EVENT_USER_ADDED, {"user_id": user.id})
@@ -317,9 +319,6 @@ class AuthManager:
     ) -> None:
         """Update a user."""
         kwargs: dict[str, Any] = {}
-
-        if user.system_generated and local_only is not None:
-            raise ValueError("Unable to set local only on a system user")
 
         for attr_name, value in (
             ("name", name),
