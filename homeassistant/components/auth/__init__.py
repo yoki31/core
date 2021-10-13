@@ -135,6 +135,7 @@ from homeassistant.components.http.ban import log_invalid_auth
 from homeassistant.components.http.data_validator import RequestDataValidator
 from homeassistant.components.http.view import HomeAssistantView
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.network import is_internal_request
 from homeassistant.loader import bind_hass
 from homeassistant.util import dt as dt_util
 
@@ -312,6 +313,15 @@ class TokenView(HomeAssistantView):
                 status_code=HTTPStatus.FORBIDDEN,
             )
 
+        if user.local_only and not is_internal_request(hass):
+            return self.json(
+                {
+                    "error": "access_denied",
+                    "error_description": "External access blocked",
+                },
+                status_code=HTTPStatus.FORBIDDEN,
+            )
+
         refresh_token = await hass.auth.async_create_refresh_token(
             user, client_id, credential=credential
         )
@@ -360,6 +370,15 @@ class TokenView(HomeAssistantView):
         if refresh_token.client_id != client_id:
             return self.json(
                 {"error": "invalid_request"}, status_code=HTTPStatus.BAD_REQUEST
+            )
+
+        if refresh_token.user.local_only and not is_internal_request(hass):
+            return self.json(
+                {
+                    "error": "access_denied",
+                    "error_description": "External access blocked",
+                },
+                status_code=HTTPStatus.FORBIDDEN,
             )
 
         try:
