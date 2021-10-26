@@ -82,9 +82,8 @@ from homeassistant.components.http.ban import (
 )
 from homeassistant.components.http.data_validator import RequestDataValidator
 from homeassistant.components.http.view import HomeAssistantView
-from homeassistant.helpers.network import is_internal_request
 
-from . import indieauth
+from . import indieauth, user_allowed_do_auth
 
 
 async def async_setup(hass, store_result):
@@ -176,9 +175,9 @@ class LoginFlowBaseView(HomeAssistantView):
             # Result can be None if credential was never linked to a user before.
             user = await hass.auth.async_get_user_by_credentials(result_obj)
 
-        if user is not None and user.local_only and not is_internal_request(hass):
+        if user is not None and (user_access_error := user_allowed_do_auth(hass, user)):
             return self.json_message(
-                "Login blocked, user is local only", HTTPStatus.FORBIDDEN
+                f"Login blocked: {user_access_error}", HTTPStatus.FORBIDDEN
             )
 
         await process_success_login(request)
