@@ -255,7 +255,7 @@ def user_allowed_do_auth(hass: HomeAssistant, user: User) -> str | None:
     if network.is_local(remote):
         return None
 
-    return "User is local only"
+    return "User cannot authenticate remotely"
 
 
 class TokenView(HomeAssistantView):
