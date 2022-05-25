@@ -1,4 +1,4 @@
-PyJWT==2.1.0
+PyJWT==2.4.0
 PyNaCl==1.4.0
 aiodiscover==1.4.7
 aiohttp==3.8.1
