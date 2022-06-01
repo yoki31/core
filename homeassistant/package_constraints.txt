@@ -16,7 +16,7 @@ cryptography==35.0.0
 emoji==1.6.3
 hass-nabucasa==0.52.0
 home-assistant-frontend==20220203.0
-httpx==0.21.3
+httpx==0.23.0
 ifaddr==0.1.7
 jinja2==3.0.3
 paho-mqtt==1.6.1
