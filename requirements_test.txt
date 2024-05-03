@@ -29,7 +29,7 @@ pytest==6.2.5
 requests_mock==1.9.2
 respx==0.19.0
 stdlib-list==0.7.0
-tqdm==4.49.0
+tqdm==4.66.3
 types-atomicwrites==1.4.1
 types-croniter==1.0.0
 types-backports==0.1.3
