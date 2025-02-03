@@ -1,4 +1,7 @@
 """The FireServiceRota integration."""
+
+from __future__ import annotations
+
 from datetime import timedelta
 import logging
 
@@ -23,7 +26,7 @@ MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=60)
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.SWITCH]
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR, Platform.SWITCH]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -43,6 +46,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
+        config_entry=entry,
         name="duty binary sensor",
         update_method=async_update_data,
         update_interval=MIN_TIME_BETWEEN_UPDATES,
@@ -55,7 +59,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DATA_COORDINATOR: coordinator,
     }
 
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
@@ -181,7 +185,7 @@ class FireServiceRotaClient:
     async def update_call(self, func, *args):
         """Perform update call and return data."""
         if self.token_refresh_failure:
-            return
+            return None
 
         try:
             return await self._hass.async_add_executor_job(func, *args)
@@ -195,25 +199,25 @@ class FireServiceRotaClient:
 
                 return await self._hass.async_add_executor_job(func, *args)
 
-    async def async_update(self) -> object:
+    async def async_update(self) -> dict | None:
         """Get the latest availability data."""
         data = await self.update_call(
             self.fsr.get_availability, str(self._hass.config.time_zone)
         )
 
         if not data:
-            return
+            return None
 
         self.on_duty = bool(data.get("available"))
 
         _LOGGER.debug("Updated availability data: %s", data)
         return data
 
-    async def async_response_update(self) -> object:
+    async def async_response_update(self) -> dict | None:
         """Get the latest incident response data."""
 
         if not self.incident_id:
-            return
+            return None
 
         _LOGGER.debug("Updating response data for incident id %s", self.incident_id)
 
