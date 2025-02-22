@@ -1,24 +1,24 @@
 """Support for Xiaomi Mi Air Quality Monitor (PM2.5)."""
+
+from collections.abc import Callable
 import logging
 
 from miio import AirQualityMonitor, AirQualityMonitorCGDN1, DeviceException
 
 from homeassistant.components.air_quality import AirQualityEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_TOKEN
+from homeassistant.const import CONF_DEVICE, CONF_HOST, CONF_MODEL, CONF_TOKEN
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
-    CONF_DEVICE,
     CONF_FLOW_TYPE,
-    CONF_MODEL,
     MODEL_AIRQUALITYMONITOR_B1,
     MODEL_AIRQUALITYMONITOR_CGDN1,
     MODEL_AIRQUALITYMONITOR_S1,
     MODEL_AIRQUALITYMONITOR_V1,
 )
-from .device import XiaomiMiioEntity
+from .entity import XiaomiMiioEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -219,7 +219,7 @@ class AirMonitorCGDN1(XiaomiMiioEntity, AirQualityEntity):
         return self._particulate_matter_10
 
 
-DEVICE_MAP = {
+DEVICE_MAP: dict[str, dict[str, Callable]] = {
     MODEL_AIRQUALITYMONITOR_S1: {
         "device_class": AirQualityMonitor,
         "entity_class": AirMonitorS1,
@@ -242,7 +242,7 @@ DEVICE_MAP = {
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Xiaomi Air Quality from a config entry."""
     entities = []
