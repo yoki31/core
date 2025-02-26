@@ -1,4 +1,5 @@
 """Support for numbers which integrates with other components."""
+
 from __future__ import annotations
 
 import logging
@@ -6,25 +7,35 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.components.number import NumberEntity
-from homeassistant.components.number.const import (
-    ATTR_MAX,
-    ATTR_MIN,
-    ATTR_STEP,
+from homeassistant.components.number import (
     ATTR_VALUE,
     DEFAULT_MAX_VALUE,
     DEFAULT_MIN_VALUE,
+    DEFAULT_STEP,
     DOMAIN as NUMBER_DOMAIN,
+    NumberEntity,
 )
-from homeassistant.const import CONF_NAME, CONF_OPTIMISTIC, CONF_STATE, CONF_UNIQUE_ID
-from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    CONF_DEVICE_ID,
+    CONF_NAME,
+    CONF_OPTIMISTIC,
+    CONF_STATE,
+    CONF_UNIQUE_ID,
+    CONF_UNIT_OF_MEASUREMENT,
+)
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv, selector
+from homeassistant.helpers.device import async_device_info_to_link_from_device_id
+from homeassistant.helpers.entity_platform import (
+    AddConfigEntryEntitiesCallback,
+    AddEntitiesCallback,
+)
 from homeassistant.helpers.script import Script
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 from . import TriggerUpdateCoordinator
-from .const import DOMAIN
+from .const import CONF_MAX, CONF_MIN, CONF_STEP, DOMAIN
 from .template_entity import (
     TEMPLATE_ENTITY_AVAILABILITY_SCHEMA,
     TEMPLATE_ENTITY_ICON_SCHEMA,
@@ -45,15 +56,28 @@ NUMBER_SCHEMA = (
             vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.template,
             vol.Required(CONF_STATE): cv.template,
             vol.Required(CONF_SET_VALUE): cv.SCRIPT_SCHEMA,
-            vol.Required(ATTR_STEP): cv.template,
-            vol.Optional(ATTR_MIN, default=DEFAULT_MIN_VALUE): cv.template,
-            vol.Optional(ATTR_MAX, default=DEFAULT_MAX_VALUE): cv.template,
+            vol.Required(CONF_STEP): cv.template,
+            vol.Optional(CONF_MIN, default=DEFAULT_MIN_VALUE): cv.template,
+            vol.Optional(CONF_MAX, default=DEFAULT_MAX_VALUE): cv.template,
+            vol.Optional(CONF_UNIT_OF_MEASUREMENT): cv.string,
             vol.Optional(CONF_OPTIMISTIC, default=DEFAULT_OPTIMISTIC): cv.boolean,
             vol.Optional(CONF_UNIQUE_ID): cv.string,
         }
     )
     .extend(TEMPLATE_ENTITY_AVAILABILITY_SCHEMA.schema)
     .extend(TEMPLATE_ENTITY_ICON_SCHEMA.schema)
+)
+NUMBER_CONFIG_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_NAME): cv.template,
+        vol.Required(CONF_STATE): cv.template,
+        vol.Required(CONF_STEP): cv.template,
+        vol.Required(CONF_SET_VALUE): cv.SCRIPT_SCHEMA,
+        vol.Optional(CONF_MIN): cv.template,
+        vol.Optional(CONF_MAX): cv.template,
+        vol.Optional(CONF_UNIT_OF_MEASUREMENT): cv.string,
+        vol.Optional(CONF_DEVICE_ID): selector.DeviceSelector(),
+    }
 )
 
 
@@ -97,8 +121,31 @@ async def async_setup_platform(
     )
 
 
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """Initialize config entry."""
+    _options = dict(config_entry.options)
+    _options.pop("template_type")
+    validated_config = NUMBER_CONFIG_SCHEMA(_options)
+    async_add_entities([TemplateNumber(hass, validated_config, config_entry.entry_id)])
+
+
+@callback
+def async_create_preview_number(
+    hass: HomeAssistant, name: str, config: dict[str, Any]
+) -> TemplateNumber:
+    """Create a preview number."""
+    validated_config = NUMBER_CONFIG_SCHEMA(config | {CONF_NAME: name})
+    return TemplateNumber(hass, validated_config, None)
+
+
 class TemplateNumber(TemplateEntity, NumberEntity):
     """Representation of a template number."""
+
+    _attr_should_poll = False
 
     def __init__(
         self,
@@ -108,57 +155,67 @@ class TemplateNumber(TemplateEntity, NumberEntity):
     ) -> None:
         """Initialize the number."""
         super().__init__(hass, config=config, unique_id=unique_id)
+        assert self._attr_name is not None
         self._value_template = config[CONF_STATE]
         self._command_set_value = Script(
             hass, config[CONF_SET_VALUE], self._attr_name, DOMAIN
         )
-        self._step_template = config[ATTR_STEP]
-        self._min_value_template = config[ATTR_MIN]
-        self._max_value_template = config[ATTR_MAX]
-        self._attr_assumed_state = self._optimistic = config[CONF_OPTIMISTIC]
-        self._attr_value = None
-        self._attr_step = None
-        self._attr_min_value = None
-        self._attr_max_value = None
 
-    async def async_added_to_hass(self) -> None:
-        """Register callbacks."""
+        self._step_template = config[CONF_STEP]
+        self._min_value_template = config[CONF_MIN]
+        self._max_value_template = config[CONF_MAX]
+        self._attr_assumed_state = self._optimistic = config.get(CONF_OPTIMISTIC)
+        self._attr_native_unit_of_measurement = config.get(CONF_UNIT_OF_MEASUREMENT)
+        self._attr_native_step = DEFAULT_STEP
+        self._attr_native_min_value = DEFAULT_MIN_VALUE
+        self._attr_native_max_value = DEFAULT_MAX_VALUE
+        self._attr_device_info = async_device_info_to_link_from_device_id(
+            hass,
+            config.get(CONF_DEVICE_ID),
+        )
+
+    @callback
+    def _async_setup_templates(self) -> None:
+        """Set up templates."""
         self.add_template_attribute(
-            "_attr_value",
+            "_attr_native_value",
             self._value_template,
             validator=vol.Coerce(float),
             none_on_template_error=True,
         )
         self.add_template_attribute(
-            "_attr_step",
+            "_attr_native_step",
             self._step_template,
             validator=vol.Coerce(float),
             none_on_template_error=True,
         )
         if self._min_value_template is not None:
             self.add_template_attribute(
-                "_attr_min_value",
+                "_attr_native_min_value",
                 self._min_value_template,
                 validator=vol.Coerce(float),
                 none_on_template_error=True,
             )
         if self._max_value_template is not None:
             self.add_template_attribute(
-                "_attr_max_value",
+                "_attr_native_max_value",
                 self._max_value_template,
                 validator=vol.Coerce(float),
                 none_on_template_error=True,
             )
-        await super().async_added_to_hass()
+        super()._async_setup_templates()
 
-    async def async_set_value(self, value: float) -> None:
+    async def async_set_native_value(self, value: float) -> None:
         """Set value of the number."""
         if self._optimistic:
-            self._attr_value = value
+            self._attr_native_value = value
             self.async_write_ha_state()
-        await self._command_set_value.async_run(
-            {ATTR_VALUE: value}, context=self._context
-        )
+        if self._command_set_value:
+            await self.async_run_script(
+                self._command_set_value,
+                run_variables={ATTR_VALUE: value},
+                context=self._context,
+            )
 
 
 class TriggerNumberEntity(TriggerEntity, NumberEntity):
@@ -167,9 +224,9 @@ class TriggerNumberEntity(TriggerEntity, NumberEntity):
     domain = NUMBER_DOMAIN
     extra_template_keys = (
         CONF_STATE,
-        ATTR_STEP,
-        ATTR_MIN,
-        ATTR_MAX,
+        CONF_STEP,
+        CONF_MIN,
+        CONF_MAX,
     )
 
     def __init__(
@@ -180,6 +237,7 @@ class TriggerNumberEntity(TriggerEntity, NumberEntity):
     ) -> None:
         """Initialize the entity."""
         super().__init__(hass, coordinator, config)
+
         self._command_set_value = Script(
             hass,
             config[CONF_SET_VALUE],
@@ -187,36 +245,38 @@ class TriggerNumberEntity(TriggerEntity, NumberEntity):
             DOMAIN,
         )
 
+        self._attr_native_unit_of_measurement = config.get(CONF_UNIT_OF_MEASUREMENT)
+
     @property
-    def value(self) -> float | None:
+    def native_value(self) -> float | None:
         """Return the currently selected option."""
         return vol.Any(vol.Coerce(float), None)(self._rendered.get(CONF_STATE))
 
     @property
-    def min_value(self) -> int:
+    def native_min_value(self) -> int:
         """Return the minimum value."""
         return vol.Any(vol.Coerce(float), None)(
-            self._rendered.get(ATTR_MIN, super().min_value)
+            self._rendered.get(CONF_MIN, super().native_min_value)
         )
 
     @property
-    def max_value(self) -> int:
+    def native_max_value(self) -> int:
         """Return the maximum value."""
         return vol.Any(vol.Coerce(float), None)(
-            self._rendered.get(ATTR_MAX, super().max_value)
+            self._rendered.get(CONF_MAX, super().native_max_value)
         )
 
     @property
-    def step(self) -> int:
+    def native_step(self) -> int:
         """Return the increment/decrement step."""
         return vol.Any(vol.Coerce(float), None)(
-            self._rendered.get(ATTR_STEP, super().step)
+            self._rendered.get(CONF_STEP, super().native_step)
         )
 
-    async def async_set_value(self, value: float) -> None:
+    async def async_set_native_value(self, value: float) -> None:
         """Set value of the number."""
         if self._config[CONF_OPTIMISTIC]:
-            self._attr_value = value
+            self._attr_native_value = value
             self.async_write_ha_state()
         await self._command_set_value.async_run(
             {ATTR_VALUE: value}, context=self._context

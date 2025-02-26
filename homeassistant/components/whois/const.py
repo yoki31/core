@@ -1,4 +1,5 @@
 """Constants for the Whois integration."""
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -13,8 +14,6 @@ PLATFORMS = [Platform.SENSOR]
 LOGGER = logging.getLogger(__package__)
 
 SCAN_INTERVAL = timedelta(hours=24)
-
-DEFAULT_NAME = "Whois"
 
 ATTR_EXPIRES = "expires"
 ATTR_NAME_SERVERS = "name_servers"
