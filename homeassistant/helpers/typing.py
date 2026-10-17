@@ -1,21 +1,23 @@
 """Typing Helpers for Home Assistant."""
+
 from collections.abc import Mapping
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import Any, Never
 
-import homeassistant.core
+import probatio
 
-GPSType = tuple[float, float]
-ConfigType = dict[str, Any]
-ContextType = homeassistant.core.Context
-DiscoveryInfoType = dict[str, Any]
-EventType = homeassistant.core.Event
-ServiceDataType = dict[str, Any]
-StateType = Union[None, str, int, float]
-TemplateVarsType = Optional[Mapping[str, Any]]
+type GPSType = tuple[float, float]
+type ConfigType = dict[str, Any]
+type DiscoveryInfoType = dict[str, Any]
+type ServiceDataType = dict[str, Any]
+type StateType = str | int | float | None
+type TemplateVarsType = Mapping[str, Any] | None
+type NoEventData = Mapping[str, Never]
+type VolSchemaType = probatio.Schema | probatio.All | probatio.Any | probatio.Union
+type VolDictType = dict[str | probatio.Marker, Any]
 
 # Custom type for recorder Queries
-QueryType = Any
+type QueryType = Any
 
 
 class UndefinedType(Enum):
@@ -24,12 +26,4 @@ class UndefinedType(Enum):
     _singleton = 0
 
 
-UNDEFINED = UndefinedType._singleton  # pylint: disable=protected-access
-
-# The following types should not used and
-# are not present in the core code base.
-# They are kept in order not to break custom integrations
-# that may rely on them.
-# In due time they will be removed.
-HomeAssistantType = homeassistant.core.HomeAssistant
-ServiceCallType = homeassistant.core.ServiceCall
+UNDEFINED = UndefinedType._singleton  # noqa: SLF001

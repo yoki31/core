@@ -1,17 +1,13 @@
 """Provides device triggers for Z-Wave JS."""
-from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-import voluptuous as vol
+import probatio
 from zwave_js_server.const import CommandClass
 
-from homeassistant.components.automation import (
-    AutomationActionType,
-    AutomationTriggerInfo,
-)
-from homeassistant.components.device_automation import DEVICE_TRIGGER_BASE_SCHEMA
-from homeassistant.components.device_automation.exceptions import (
+from homeassistant.components.device_automation import (
+    DEVICE_TRIGGER_BASE_SCHEMA,
     InvalidDeviceAutomationConfig,
 )
 from homeassistant.components.homeassistant.triggers import event, state
@@ -19,19 +15,21 @@ from homeassistant.const import (
     CONF_DEVICE_ID,
     CONF_DOMAIN,
     CONF_ENTITY_ID,
+    CONF_OPTIONS,
     CONF_PLATFORM,
     CONF_TYPE,
 )
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, Context, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import (
     config_validation as cv,
-    device_registry,
-    entity_registry,
+    device_registry as dr,
+    entity_registry as er,
 )
+from homeassistant.helpers.trigger import TriggerActionType, TriggerInfo
 from homeassistant.helpers.typing import ConfigType
 
-from . import trigger
+from .config_validation import COMMAND_CLASS_SCHEMA, VALUE_SCHEMA
 from .const import (
     ATTR_COMMAND_CLASS,
     ATTR_DATA_TYPE,
@@ -46,15 +44,18 @@ from .const import (
     ATTR_VALUE,
     ATTR_VALUE_RAW,
     DOMAIN,
+    NODE_STATUSES,
     ZWAVE_JS_NOTIFICATION_EVENT,
     ZWAVE_JS_VALUE_NOTIFICATION_EVENT,
 )
-from .device_automation_helpers import CONF_SUBTYPE, NODE_STATUSES
+from .device_automation_helpers import (
+    CONF_SUBTYPE,
+    async_bypass_dynamic_config_validation,
+    generate_config_parameter_subtype,
+)
 from .helpers import (
     async_get_node_from_device_id,
     async_get_node_status_sensor_entity_id,
-    async_is_device_config_entry_not_loaded,
-    check_type_schema_map,
     copy_available_params,
     get_value_state_schema,
     get_zwave_value_from_config,
@@ -64,6 +65,8 @@ from .triggers.value_updated import (
     ATTR_FROM,
     ATTR_TO,
     PLATFORM_TYPE as VALUE_UPDATED_PLATFORM_TYPE,
+    async_attach_trigger as attach_value_updated_trigger,
+    async_validate_trigger_config as validate_value_updated_trigger_config,
 )
 
 # Trigger types
@@ -76,14 +79,6 @@ CONFIG_PARAMETER_VALUE_UPDATED = f"{VALUE_UPDATED_PLATFORM_TYPE}.config_paramete
 VALUE_VALUE_UPDATED = f"{VALUE_UPDATED_PLATFORM_TYPE}.value"
 NODE_STATUS = "state.node_status"
 
-VALUE_SCHEMA = vol.Any(
-    bool,
-    vol.Coerce(int),
-    vol.Coerce(float),
-    cv.boolean,
-    cv.string,
-)
-
 
 NOTIFICATION_EVENT_CC_MAPPINGS = (
     (ENTRY_CONTROL_NOTIFICATION, CommandClass.ENTRY_CONTROL),
@@ -93,54 +88,54 @@ NOTIFICATION_EVENT_CC_MAPPINGS = (
 # Event based trigger schemas
 BASE_EVENT_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
     {
-        vol.Required(ATTR_COMMAND_CLASS): vol.In([cc.value for cc in CommandClass]),
+        probatio.Required(ATTR_COMMAND_CLASS): COMMAND_CLASS_SCHEMA,
     }
 )
 
 NOTIFICATION_NOTIFICATION_SCHEMA = BASE_EVENT_SCHEMA.extend(
     {
-        vol.Required(CONF_TYPE): NOTIFICATION_NOTIFICATION,
-        vol.Optional(f"{ATTR_TYPE}."): vol.Coerce(int),
-        vol.Optional(ATTR_LABEL): cv.string,
-        vol.Optional(ATTR_EVENT): vol.Coerce(int),
-        vol.Optional(ATTR_EVENT_LABEL): cv.string,
+        probatio.Required(CONF_TYPE): NOTIFICATION_NOTIFICATION,
+        probatio.Optional(f"{ATTR_TYPE}."): probatio.Coerce(int),
+        probatio.Optional(ATTR_LABEL): cv.string,
+        probatio.Optional(ATTR_EVENT): probatio.Coerce(int),
+        probatio.Optional(ATTR_EVENT_LABEL): cv.string,
     }
 )
 
 ENTRY_CONTROL_NOTIFICATION_SCHEMA = BASE_EVENT_SCHEMA.extend(
     {
-        vol.Required(CONF_TYPE): ENTRY_CONTROL_NOTIFICATION,
-        vol.Optional(ATTR_EVENT_TYPE): vol.Coerce(int),
-        vol.Optional(ATTR_DATA_TYPE): vol.Coerce(int),
+        probatio.Required(CONF_TYPE): ENTRY_CONTROL_NOTIFICATION,
+        probatio.Optional(ATTR_EVENT_TYPE): probatio.Coerce(int),
+        probatio.Optional(ATTR_DATA_TYPE): probatio.Coerce(int),
     }
 )
 
 BASE_VALUE_NOTIFICATION_EVENT_SCHEMA = BASE_EVENT_SCHEMA.extend(
     {
-        vol.Required(ATTR_PROPERTY): vol.Any(int, str),
-        vol.Optional(ATTR_PROPERTY_KEY): vol.Any(int, str),
-        vol.Required(ATTR_ENDPOINT): vol.Coerce(int),
-        vol.Optional(ATTR_VALUE): vol.Coerce(int),
-        vol.Required(CONF_SUBTYPE): cv.string,
+        probatio.Required(ATTR_PROPERTY): probatio.Any(int, str),
+        probatio.Optional(ATTR_PROPERTY_KEY): probatio.Any(int, str),
+        probatio.Required(ATTR_ENDPOINT): probatio.Coerce(int),
+        probatio.Optional(ATTR_VALUE): probatio.Coerce(int),
+        probatio.Required(CONF_SUBTYPE): cv.string,
     }
 )
 
 BASIC_VALUE_NOTIFICATION_SCHEMA = BASE_VALUE_NOTIFICATION_EVENT_SCHEMA.extend(
     {
-        vol.Required(CONF_TYPE): BASIC_VALUE_NOTIFICATION,
+        probatio.Required(CONF_TYPE): BASIC_VALUE_NOTIFICATION,
     }
 )
 
 CENTRAL_SCENE_VALUE_NOTIFICATION_SCHEMA = BASE_VALUE_NOTIFICATION_EVENT_SCHEMA.extend(
     {
-        vol.Required(CONF_TYPE): CENTRAL_SCENE_VALUE_NOTIFICATION,
+        probatio.Required(CONF_TYPE): CENTRAL_SCENE_VALUE_NOTIFICATION,
     }
 )
 
 SCENE_ACTIVATION_VALUE_NOTIFICATION_SCHEMA = (
     BASE_VALUE_NOTIFICATION_EVENT_SCHEMA.extend(
         {
-            vol.Required(CONF_TYPE): SCENE_ACTIVATION_VALUE_NOTIFICATION,
+            probatio.Required(CONF_TYPE): SCENE_ACTIVATION_VALUE_NOTIFICATION,
         }
     )
 )
@@ -148,41 +143,45 @@ SCENE_ACTIVATION_VALUE_NOTIFICATION_SCHEMA = (
 # State based trigger schemas
 BASE_STATE_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_ENTITY_ID): cv.entity_id,
+        probatio.Required(CONF_ENTITY_ID): cv.entity_id_or_uuid,
     }
 )
 
 NODE_STATUS_SCHEMA = BASE_STATE_SCHEMA.extend(
     {
-        vol.Required(CONF_TYPE): NODE_STATUS,
-        vol.Optional(state.CONF_FROM): vol.In(NODE_STATUSES),
-        vol.Optional(state.CONF_TO): vol.In(NODE_STATUSES),
-        vol.Optional(state.CONF_FOR): cv.positive_time_period_dict,
+        probatio.Required(CONF_TYPE): NODE_STATUS,
+        probatio.Optional(state.CONF_FROM): probatio.In(NODE_STATUSES),
+        probatio.Optional(state.CONF_TO): probatio.In(NODE_STATUSES),
+        probatio.Optional(state.CONF_FOR): cv.positive_time_period_dict,
     }
 )
 
 # zwave_js.value_updated based trigger schemas
 BASE_VALUE_UPDATED_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
     {
-        vol.Required(ATTR_COMMAND_CLASS): vol.In([cc.value for cc in CommandClass]),
-        vol.Required(ATTR_PROPERTY): vol.Any(int, str),
-        vol.Optional(ATTR_PROPERTY_KEY): vol.Any(None, vol.Coerce(int), str),
-        vol.Optional(ATTR_ENDPOINT): vol.Any(None, vol.Coerce(int)),
-        vol.Optional(ATTR_FROM): VALUE_SCHEMA,
-        vol.Optional(ATTR_TO): VALUE_SCHEMA,
+        probatio.Required(ATTR_COMMAND_CLASS): COMMAND_CLASS_SCHEMA,
+        probatio.Required(ATTR_PROPERTY): probatio.Any(int, str),
+        probatio.Optional(ATTR_PROPERTY_KEY): probatio.Any(
+            None, probatio.Coerce(int), str
+        ),
+        probatio.Optional(ATTR_ENDPOINT, default=0): probatio.Any(
+            None, probatio.Coerce(int)
+        ),
+        probatio.Optional(ATTR_FROM): VALUE_SCHEMA,
+        probatio.Optional(ATTR_TO): VALUE_SCHEMA,
     }
 )
 
 CONFIG_PARAMETER_VALUE_UPDATED_SCHEMA = BASE_VALUE_UPDATED_SCHEMA.extend(
     {
-        vol.Required(CONF_TYPE): CONFIG_PARAMETER_VALUE_UPDATED,
-        vol.Required(CONF_SUBTYPE): cv.string,
+        probatio.Required(CONF_TYPE): CONFIG_PARAMETER_VALUE_UPDATED,
+        probatio.Required(CONF_SUBTYPE): cv.string,
     }
 )
 
 VALUE_VALUE_UPDATED_SCHEMA = BASE_VALUE_UPDATED_SCHEMA.extend(
     {
-        vol.Required(CONF_TYPE): VALUE_VALUE_UPDATED,
+        probatio.Required(CONF_TYPE): VALUE_VALUE_UPDATED,
     }
 )
 
@@ -197,15 +196,9 @@ TYPE_SCHEMA_MAP = {
     NODE_STATUS: NODE_STATUS_SCHEMA,
 }
 
-
-TRIGGER_TYPE_SCHEMA = vol.Schema(
-    {vol.Required(CONF_TYPE): vol.In(TYPE_SCHEMA_MAP)}, extra=vol.ALLOW_EXTRA
-)
-
-TRIGGER_SCHEMA = vol.All(
+TRIGGER_SCHEMA = probatio.All(
     remove_keys_with_empty_values,
-    TRIGGER_TYPE_SCHEMA,
-    check_type_schema_map(TYPE_SCHEMA_MAP),
+    probatio.TaggedUnion(CONF_TYPE, TYPE_SCHEMA_MAP),
 )
 
 
@@ -218,7 +211,7 @@ async def async_validate_trigger_config(
     # We return early if the config entry for this device is not ready because we can't
     # validate the value without knowing the state of the device
     try:
-        device_config_entry_not_loaded = async_is_device_config_entry_not_loaded(
+        bypass_dynamic_config_validation = async_bypass_dynamic_config_validation(
             hass, config[CONF_DEVICE_ID]
         )
     except ValueError as err:
@@ -226,7 +219,7 @@ async def async_validate_trigger_config(
             f"Device {config[CONF_DEVICE_ID]} not found"
         ) from err
 
-    if device_config_entry_not_loaded:
+    if bypass_dynamic_config_validation:
         return config
 
     trigger_type = config[CONF_TYPE]
@@ -234,7 +227,7 @@ async def async_validate_trigger_config(
         try:
             node = async_get_node_from_device_id(hass, config[CONF_DEVICE_ID])
             get_zwave_value_from_config(node, config)
-        except vol.Invalid as err:
+        except probatio.Invalid as err:
             raise InvalidDeviceAutomationConfig(err.msg) from err
 
     return config
@@ -254,24 +247,31 @@ async def async_get_triggers(
     hass: HomeAssistant, device_id: str
 ) -> list[dict[str, Any]]:
     """List device triggers for Z-Wave JS devices."""
-    dev_reg = device_registry.async_get(hass)
-    node = async_get_node_from_device_id(hass, device_id, dev_reg)
-
-    triggers = []
+    triggers: list[dict] = []
     base_trigger = {
         CONF_PLATFORM: "device",
         CONF_DEVICE_ID: device_id,
         CONF_DOMAIN: DOMAIN,
     }
 
+    dev_reg = dr.async_get(hass)
+    node = async_get_node_from_device_id(hass, device_id)
+
+    if node.client.driver and node.client.driver.controller.own_node == node:
+        return triggers
+
     # We can add a node status trigger if the node status sensor is enabled
-    ent_reg = entity_registry.async_get(hass)
+    ent_reg = er.async_get(hass)
     entity_id = async_get_node_status_sensor_entity_id(
         hass, device_id, ent_reg, dev_reg
     )
-    if (entity := ent_reg.async_get(entity_id)) is not None and not entity.disabled:
+    if (
+        entity_id
+        and (entity := ent_reg.async_get(entity_id)) is not None
+        and not entity.disabled
+    ):
         triggers.append(
-            {**base_trigger, CONF_TYPE: NODE_STATUS, CONF_ENTITY_ID: entity_id}
+            {**base_trigger, CONF_TYPE: NODE_STATUS, CONF_ENTITY_ID: entity.id}
         )
 
     # Handle notification event triggers
@@ -353,7 +353,7 @@ async def async_get_triggers(
                 ATTR_PROPERTY_KEY: config_value.property_key,
                 ATTR_ENDPOINT: config_value.endpoint,
                 ATTR_COMMAND_CLASS: config_value.command_class,
-                CONF_SUBTYPE: f"{config_value.value_id} ({config_value.property_name})",
+                CONF_SUBTYPE: generate_config_parameter_subtype(config_value),
             }
             for config_value in node.get_configuration_values().values()
         ]
@@ -365,8 +365,8 @@ async def async_get_triggers(
 async def async_attach_trigger(
     hass: HomeAssistant,
     config: ConfigType,
-    action: AutomationActionType,
-    automation_info: AutomationTriggerInfo,
+    action: TriggerActionType,
+    trigger_info: TriggerInfo,
 ) -> CALLBACK_TYPE:
     """Attach a trigger."""
     trigger_type = config[CONF_TYPE]
@@ -410,7 +410,7 @@ async def async_attach_trigger(
 
         event_config = event.TRIGGER_SCHEMA(event_config)
         return await event.async_attach_trigger(
-            hass, event_config, action, automation_info, platform_type="device"
+            hass, event_config, action, trigger_info, platform_type="device"
         )
 
     if trigger_platform == "state":
@@ -426,17 +426,18 @@ async def async_attach_trigger(
 
         state_config = await state.async_validate_trigger_config(hass, state_config)
         return await state.async_attach_trigger(
-            hass, state_config, action, automation_info, platform_type="device"
+            hass, state_config, action, trigger_info, platform_type="device"
         )
 
     if trigger_platform == VALUE_UPDATED_PLATFORM_TYPE:
         zwave_js_config = {
-            state.CONF_PLATFORM: trigger_platform,
-            CONF_DEVICE_ID: config[CONF_DEVICE_ID],
+            CONF_OPTIONS: {
+                CONF_DEVICE_ID: config[CONF_DEVICE_ID],
+            },
         }
         copy_available_params(
             config,
-            zwave_js_config,
+            zwave_js_config[CONF_OPTIONS],
             [
                 ATTR_COMMAND_CLASS,
                 ATTR_PROPERTY,
@@ -446,11 +447,31 @@ async def async_attach_trigger(
                 ATTR_TO,
             ],
         )
-        zwave_js_config = await trigger.async_validate_trigger_config(
+        zwave_js_config = await validate_value_updated_trigger_config(
             hass, zwave_js_config
         )
-        return await trigger.async_attach_trigger(
-            hass, zwave_js_config, action, automation_info
+
+        @callback
+        def run_action(
+            extra_trigger_payload: dict[str, Any],
+            description: str,
+            context: Context | None = None,
+        ) -> asyncio.Task[Any]:
+            """Run action with trigger variables."""
+
+            payload = {
+                "trigger": {
+                    **trigger_info["trigger_data"],
+                    CONF_PLATFORM: VALUE_UPDATED_PLATFORM_TYPE,
+                    "description": description,
+                    **extra_trigger_payload,
+                }
+            }
+
+            return hass.async_create_task(action(payload, context))
+
+        return await attach_value_updated_trigger(
+            hass, zwave_js_config[CONF_OPTIONS], run_action
         )
 
     raise HomeAssistantError(f"Unhandled trigger type {trigger_type}")
@@ -458,7 +479,7 @@ async def async_attach_trigger(
 
 async def async_get_trigger_capabilities(
     hass: HomeAssistant, config: ConfigType
-) -> dict[str, vol.Schema]:
+) -> dict[str, probatio.Schema]:
     """List trigger capabilities."""
     trigger_type = config[CONF_TYPE]
 
@@ -467,33 +488,33 @@ async def async_get_trigger_capabilities(
     # Add additional fields to the automation trigger UI
     if trigger_type == NOTIFICATION_NOTIFICATION:
         return {
-            "extra_fields": vol.Schema(
+            "extra_fields": probatio.Schema(
                 {
-                    vol.Optional(f"{ATTR_TYPE}."): cv.string,
-                    vol.Optional(ATTR_LABEL): cv.string,
-                    vol.Optional(ATTR_EVENT): cv.string,
-                    vol.Optional(ATTR_EVENT_LABEL): cv.string,
+                    probatio.Optional(f"{ATTR_TYPE}."): cv.string,
+                    probatio.Optional(ATTR_LABEL): cv.string,
+                    probatio.Optional(ATTR_EVENT): cv.string,
+                    probatio.Optional(ATTR_EVENT_LABEL): cv.string,
                 }
             )
         }
 
     if trigger_type == ENTRY_CONTROL_NOTIFICATION:
         return {
-            "extra_fields": vol.Schema(
+            "extra_fields": probatio.Schema(
                 {
-                    vol.Optional(ATTR_EVENT_TYPE): cv.string,
-                    vol.Optional(ATTR_DATA_TYPE): cv.string,
+                    probatio.Optional(ATTR_EVENT_TYPE): cv.string,
+                    probatio.Optional(ATTR_DATA_TYPE): cv.string,
                 }
             )
         }
 
     if trigger_type == NODE_STATUS:
         return {
-            "extra_fields": vol.Schema(
+            "extra_fields": probatio.Schema(
                 {
-                    vol.Optional(state.CONF_FROM): vol.In(NODE_STATUSES),
-                    vol.Optional(state.CONF_TO): vol.In(NODE_STATUSES),
-                    vol.Optional(state.CONF_FOR): cv.positive_time_period_dict,
+                    probatio.Optional(state.CONF_FROM): probatio.In(NODE_STATUSES),
+                    probatio.Optional(state.CONF_TO): probatio.In(NODE_STATUSES),
+                    probatio.Optional(state.CONF_FOR): cv.positive_time_period_dict,
                 }
             )
         }
@@ -509,17 +530,21 @@ async def async_get_trigger_capabilities(
         if not value_schema:
             return {}
 
-        return {"extra_fields": vol.Schema({vol.Optional(ATTR_VALUE): value_schema})}
+        return {
+            "extra_fields": probatio.Schema(
+                {probatio.Optional(ATTR_VALUE): value_schema}
+            )
+        }
 
     if trigger_type == CONFIG_PARAMETER_VALUE_UPDATED:
         value_schema = get_value_state_schema(get_zwave_value_from_config(node, config))
         if not value_schema:
             return {}
         return {
-            "extra_fields": vol.Schema(
+            "extra_fields": probatio.Schema(
                 {
-                    vol.Optional(ATTR_FROM): value_schema,
-                    vol.Optional(ATTR_TO): value_schema,
+                    probatio.Optional(ATTR_FROM): value_schema,
+                    probatio.Optional(ATTR_TO): value_schema,
                 }
             )
         }
@@ -528,20 +553,22 @@ async def async_get_trigger_capabilities(
         # Only show command classes on this node and exclude Configuration CC since it
         # is already covered
         return {
-            "extra_fields": vol.Schema(
+            "extra_fields": probatio.Schema(
                 {
-                    vol.Required(ATTR_COMMAND_CLASS): vol.In(
+                    probatio.Required(ATTR_COMMAND_CLASS): probatio.In(
                         {
-                            CommandClass(cc.id).value: cc.name
-                            for cc in sorted(node.command_classes, key=lambda cc: cc.name)  # type: ignore[no-any-return]
+                            str(CommandClass(cc.id).value): cc.name
+                            for cc in sorted(
+                                node.command_classes, key=lambda cc: cc.name
+                            )
                             if cc.id != CommandClass.CONFIGURATION
                         }
                     ),
-                    vol.Required(ATTR_PROPERTY): cv.string,
-                    vol.Optional(ATTR_PROPERTY_KEY): cv.string,
-                    vol.Optional(ATTR_ENDPOINT): cv.string,
-                    vol.Optional(ATTR_FROM): cv.string,
-                    vol.Optional(ATTR_TO): cv.string,
+                    probatio.Required(ATTR_PROPERTY): cv.string,
+                    probatio.Optional(ATTR_PROPERTY_KEY): cv.string,
+                    probatio.Optional(ATTR_ENDPOINT): cv.string,
+                    probatio.Optional(ATTR_FROM): cv.string,
+                    probatio.Optional(ATTR_TO): cv.string,
                 }
             )
         }

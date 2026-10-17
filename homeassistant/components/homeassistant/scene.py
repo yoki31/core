@@ -1,10 +1,10 @@
 """Allow users to set and activate scenes."""
-from __future__ import annotations
 
+from collections.abc import Mapping, ValuesView
 import logging
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast, override
 
-import voluptuous as vol
+import probatio
 
 from homeassistant import config as conf_util
 from homeassistant.components.light import ATTR_TRANSITION
@@ -21,28 +21,24 @@ from homeassistant.const import (
     STATE_OFF,
     STATE_ON,
 )
-from homeassistant.core import (
-    DOMAIN as HA_DOMAIN,
-    HomeAssistant,
-    ServiceCall,
-    State,
-    callback,
+from homeassistant.core import HomeAssistant, ServiceCall, State, callback
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import config_validation as cv, entity_platform
+from homeassistant.helpers.entity_platform import AddEntitiesCallback, EntityPlatform
+from homeassistant.helpers.service import (
+    async_extract_entity_ids,
+    async_register_admin_service,
 )
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import (
-    config_per_platform,
-    config_validation as cv,
-    entity_platform,
-)
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.state import async_reproduce_state
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.loader import async_get_integration
 
+from .const import DOMAIN
 
-def _convert_states(states):
+
+def _convert_states(states: dict[str, Any]) -> dict[str, State]:
     """Convert state definitions to State objects."""
-    result = {}
+    result: dict[str, State] = {}
 
     for entity_id, info in states.items():
         entity_id = cv.entity_id(entity_id)
@@ -60,14 +56,14 @@ def _convert_states(states):
         if isinstance(state, bool):
             state = STATE_ON if state else STATE_OFF
         elif not isinstance(state, str):
-            raise vol.Invalid(f"State for {entity_id} should be a string")
+            raise probatio.Invalid(f"State for {entity_id} should be a string")
 
         result[entity_id] = State(entity_id, state, attributes)
 
     return result
 
 
-def _ensure_no_intersection(value):
+def _ensure_no_intersection(value: dict[str, Any]) -> dict[str, Any]:
     """Validate that entities and snapshot_entities do not overlap."""
     if (
         CONF_SNAPSHOT not in value
@@ -78,50 +74,52 @@ def _ensure_no_intersection(value):
     ):
         return value
 
-    raise vol.Invalid("entities and snapshot_entities must not overlap")
+    raise probatio.Invalid("entities and snapshot_entities must not overlap")
 
 
 CONF_SCENE_ID = "scene_id"
 CONF_SNAPSHOT = "snapshot_entities"
 DATA_PLATFORM = "homeassistant_scene"
 EVENT_SCENE_RELOADED = "scene_reloaded"
-STATES_SCHEMA = vol.All(dict, _convert_states)
+STATES_SCHEMA = probatio.All(dict, _convert_states)
 
 
-PLATFORM_SCHEMA = vol.Schema(
+PLATFORM_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_PLATFORM): HA_DOMAIN,
-        vol.Required(STATES): vol.All(
-            cv.ensure_list,
+        probatio.Required(CONF_PLATFORM): DOMAIN,
+        probatio.Required(STATES): probatio.All(
+            probatio.EnsureList(),
             [
-                vol.Schema(
+                probatio.Schema(
                     {
-                        vol.Optional(CONF_ID): cv.string,
-                        vol.Required(CONF_NAME): cv.string,
-                        vol.Optional(CONF_ICON): cv.icon,
-                        vol.Required(CONF_ENTITIES): STATES_SCHEMA,
+                        probatio.Optional(CONF_ID): cv.string,
+                        probatio.Required(CONF_NAME): cv.string,
+                        probatio.Optional(CONF_ICON): cv.icon,
+                        probatio.Required(CONF_ENTITIES): STATES_SCHEMA,
+                        probatio.Optional("metadata"): dict,
                     }
                 )
             ],
         ),
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
 
-CREATE_SCENE_SCHEMA = vol.All(
-    cv.has_at_least_one_key(CONF_ENTITIES, CONF_SNAPSHOT),
+CREATE_SCENE_SCHEMA = probatio.All(
+    probatio.AtLeastOne(CONF_ENTITIES, CONF_SNAPSHOT),
     _ensure_no_intersection,
-    vol.Schema(
+    probatio.Schema(
         {
-            vol.Required(CONF_SCENE_ID): cv.slug,
-            vol.Optional(CONF_ENTITIES, default={}): STATES_SCHEMA,
-            vol.Optional(CONF_SNAPSHOT, default=[]): cv.entity_ids,
+            probatio.Required(CONF_SCENE_ID): cv.slug,
+            probatio.Optional(CONF_ENTITIES, default={}): STATES_SCHEMA,
+            probatio.Optional(CONF_SNAPSHOT, default=[]): cv.entity_ids,
         }
     ),
 )
 
 SERVICE_APPLY = "apply"
 SERVICE_CREATE = "create"
+SERVICE_DELETE = "delete"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -132,7 +130,7 @@ class SceneConfig(NamedTuple):
     id: str | None
     name: str
     icon: str | None
-    states: dict
+    states: dict[str, State]
 
 
 @callback
@@ -141,11 +139,12 @@ def scenes_with_entity(hass: HomeAssistant, entity_id: str) -> list[str]:
     if DATA_PLATFORM not in hass.data:
         return []
 
-    platform = hass.data[DATA_PLATFORM]
+    platform: EntityPlatform = hass.data[DATA_PLATFORM]
 
+    scene_entities = cast(ValuesView[HomeAssistantScene], platform.entities.values())
     return [
         scene_entity.entity_id
-        for scene_entity in platform.entities.values()
+        for scene_entity in scene_entities
         if entity_id in scene_entity.scene_config.states
     ]
 
@@ -156,12 +155,12 @@ def entities_in_scene(hass: HomeAssistant, entity_id: str) -> list[str]:
     if DATA_PLATFORM not in hass.data:
         return []
 
-    platform = hass.data[DATA_PLATFORM]
+    platform: EntityPlatform = hass.data[DATA_PLATFORM]
 
     if (entity := platform.entities.get(entity_id)) is None:
         return []
 
-    return list(entity.scene_config.states)
+    return list(cast(HomeAssistantScene, entity).scene_config.states)
 
 
 async def async_setup_platform(
@@ -184,13 +183,18 @@ async def async_setup_platform(
         """Reload the scene config."""
         try:
             config = await conf_util.async_hass_config_yaml(hass)
-        except HomeAssistantError as err:
-            _LOGGER.error(err)
-            return
+        except (HomeAssistantError, FileNotFoundError) as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="scene_config_reload_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
 
         integration = await async_get_integration(hass, SCENE_DOMAIN)
 
-        conf = await conf_util.async_process_component_config(hass, config, integration)
+        conf = await conf_util.async_process_component_and_handle_errors(
+            hass, config, integration
+        )
 
         if not (conf and platform):
             return
@@ -198,17 +202,17 @@ async def async_setup_platform(
         await platform.async_reset()
 
         # Extract only the config for the Home Assistant platform, ignore the rest.
-        for p_type, p_config in config_per_platform(conf, SCENE_DOMAIN):
-            if p_type != HA_DOMAIN:
+        for p_type, p_config in conf_util.config_per_platform(conf, SCENE_DOMAIN):
+            if p_type != DOMAIN:
                 continue
 
             _process_scenes_config(hass, async_add_entities, p_config)
 
         hass.bus.async_fire(EVENT_SCENE_RELOADED, context=call.context)
 
-    hass.helpers.service.async_register_admin_service(
-        SCENE_DOMAIN, SERVICE_RELOAD, reload_config
-    )
+    # Cannot be moved: scene actions are registered by the scene platform
+    # pylint: disable-next=home-assistant-action-registered-outside-services-module
+    async_register_admin_service(hass, SCENE_DOMAIN, SERVICE_RELOAD, reload_config)
 
     async def apply_service(call: ServiceCall) -> None:
         """Apply a scene."""
@@ -224,16 +228,17 @@ async def async_setup_platform(
             reproduce_options=reproduce_options,
         )
 
+    # pylint: disable-next=home-assistant-action-registered-outside-services-module
     hass.services.async_register(
         SCENE_DOMAIN,
         SERVICE_APPLY,
         apply_service,
-        vol.Schema(
+        probatio.Schema(
             {
-                vol.Optional(ATTR_TRANSITION): vol.All(
-                    vol.Coerce(float), vol.Clamp(min=0, max=6553)
+                probatio.Optional(ATTR_TRANSITION): probatio.All(
+                    probatio.Coerce(float), probatio.Clamp(min=0, max=6553)
                 ),
-                vol.Required(CONF_ENTITIES): STATES_SCHEMA,
+                probatio.Required(CONF_ENTITIES): STATES_SCHEMA,
             }
         ),
     )
@@ -265,14 +270,52 @@ async def async_setup_platform(
             await platform.async_remove_entity(entity_id)
         async_add_entities([HomeAssistantScene(hass, scene_config, from_service=True)])
 
+    # pylint: disable-next=home-assistant-action-registered-outside-services-module
     hass.services.async_register(
         SCENE_DOMAIN, SERVICE_CREATE, create_service, CREATE_SCENE_SCHEMA
     )
 
+    async def delete_service(call: ServiceCall) -> None:
+        """Delete a dynamically created scene."""
+        entity_ids = await async_extract_entity_ids(call)
 
-def _process_scenes_config(hass, async_add_entities, config):
+        for entity_id in entity_ids:
+            scene = platform.entities.get(entity_id)
+            if scene is None:
+                raise ServiceValidationError(
+                    translation_domain=SCENE_DOMAIN,
+                    translation_key="entity_not_scene",
+                    translation_placeholders={
+                        "entity_id": entity_id,
+                    },
+                )
+            assert isinstance(scene, HomeAssistantScene)
+            if not scene.from_service:
+                raise ServiceValidationError(
+                    translation_domain=SCENE_DOMAIN,
+                    translation_key="entity_not_dynamically_created",
+                    translation_placeholders={
+                        "entity_id": entity_id,
+                    },
+                )
+
+            await platform.async_remove_entity(entity_id)
+
+    # pylint: disable-next=home-assistant-action-registered-outside-services-module
+    hass.services.async_register(
+        SCENE_DOMAIN,
+        SERVICE_DELETE,
+        delete_service,
+        cv.make_entity_service_schema({}),
+    )
+
+
+def _process_scenes_config(
+    hass: HomeAssistant, async_add_entities: AddEntitiesCallback, config: dict[str, Any]
+) -> None:
     """Process multiple scenes and add them."""
     # Check empty list
+    scene_config: list[dict[str, Any]]
     if not (scene_config := config[STATES]):
         return
 
@@ -293,35 +336,42 @@ def _process_scenes_config(hass, async_add_entities, config):
 class HomeAssistantScene(Scene):
     """A scene is a group of entities and the states we want them to be."""
 
-    def __init__(self, hass, scene_config, from_service=False):
+    def __init__(
+        self, hass: HomeAssistant, scene_config: SceneConfig, from_service: bool = False
+    ) -> None:
         """Initialize the scene."""
         self.hass = hass
         self.scene_config = scene_config
         self.from_service = from_service
 
     @property
-    def name(self):
+    @override
+    def name(self) -> str:
         """Return the name of the scene."""
         return self.scene_config.name
 
     @property
-    def icon(self):
+    @override
+    def icon(self) -> str | None:
         """Return the icon of the scene."""
         return self.scene_config.icon
 
     @property
-    def unique_id(self):
+    @override
+    def unique_id(self) -> str | None:
         """Return unique ID."""
         return self.scene_config.id
 
     @property
-    def extra_state_attributes(self):
+    @override
+    def extra_state_attributes(self) -> Mapping[str, Any]:
         """Return the scene state attributes."""
-        attributes = {ATTR_ENTITY_ID: list(self.scene_config.states)}
+        attributes: dict[str, Any] = {ATTR_ENTITY_ID: list(self.scene_config.states)}
         if (unique_id := self.unique_id) is not None:
             attributes[CONF_ID] = unique_id
         return attributes
 
+    @override
     async def async_activate(self, **kwargs: Any) -> None:
         """Activate scene. Try to get entities into requested state."""
         await async_reproduce_state(

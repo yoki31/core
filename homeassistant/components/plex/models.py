@@ -1,12 +1,12 @@
 """Models to represent various Plex objects used in the integration."""
-import logging
 
-from homeassistant.components.media_player.const import (
-    MEDIA_TYPE_MOVIE,
-    MEDIA_TYPE_MUSIC,
-    MEDIA_TYPE_TVSHOW,
-    MEDIA_TYPE_VIDEO,
-)
+import logging
+from typing import override
+
+import plexapi.playqueue
+
+from homeassistant.components.media_player import MediaType
+from homeassistant.helpers.template import result_as_boolean
 from homeassistant.util import dt as dt_util
 
 LIVE_TV_SECTION = "Live TV"
@@ -61,6 +61,7 @@ class PlexSession:
 
         self.update_media(session)
 
+    @override
     def __repr__(self):
         """Return representation of the session."""
         return f"<{self.session_key}:{self.sensor_title}>"
@@ -81,7 +82,10 @@ class PlexSession:
         elif media.librarySectionID and media.librarySectionID < 1:
             self.media_library_title = UNKNOWN_SECTION
             _LOGGER.warning(
-                "Unknown library section ID (%s) for title '%s', please create an issue",
+                (
+                    "Unknown library section ID (%s) for title '%s',"
+                    " please create an issue"
+                ),
                 media.librarySectionID,
                 media.title,
             )
@@ -91,19 +95,23 @@ class PlexSession:
             )
 
         if media.type == "episode":
-            self.media_content_type = MEDIA_TYPE_TVSHOW
+            self.media_content_type = MediaType.TVSHOW
             self.media_season = media.seasonNumber
             self.media_series_title = media.grandparentTitle
             if media.index is not None:
                 self.media_episode = media.index
-            self.sensor_title = f"{self.media_series_title} - {media.seasonEpisode} - {self.media_title}"
+            self.sensor_title = (
+                f"{self.media_series_title} -"
+                f" {media.seasonEpisode} -"
+                f" {self.media_title}"
+            )
         elif media.type == "movie":
-            self.media_content_type = MEDIA_TYPE_MOVIE
+            self.media_content_type = MediaType.MOVIE
             if media.year is not None and media.title is not None:
                 self.media_title += f" ({media.year!s})"
             self.sensor_title = self.media_title
         elif media.type == "track":
-            self.media_content_type = MEDIA_TYPE_MUSIC
+            self.media_content_type = MediaType.MUSIC
             self.media_album_name = media.parentTitle
             self.media_album_artist = media.grandparentTitle
             self.media_track = media.index
@@ -112,7 +120,7 @@ class PlexSession:
                 f"{self.media_artist} - {self.media_album_name} - {self.media_title}"
             )
         elif media.type == "clip":
-            self.media_content_type = MEDIA_TYPE_VIDEO
+            self.media_content_type = MediaType.VIDEO
             self.sensor_title = media.title
         else:
             self.sensor_title = "Unknown"
@@ -141,3 +149,46 @@ class PlexSession:
             thumb_url = media.url(media.art)
 
         return thumb_url
+
+
+class PlexMediaSearchResult:
+    """Represents results from a Plex media media_content_id search.
+
+    Results are used by media_player.play_media implementations.
+    """
+
+    def __init__(self, media, params=None) -> None:
+        """Initialize the result."""
+        self.media = media
+        self._params = params or {}
+
+    @property
+    def offset(self) -> int:
+        """Provide the appropriate offset in ms based on payload contents."""
+        if offset := self._params.get("offset", 0):
+            return offset * 1000
+        resume = self._params.get("resume", False)
+        if isinstance(resume, str):
+            resume = result_as_boolean(resume)
+        if resume:
+            media = self.media
+            if isinstance(media, plexapi.playqueue.PlayQueue) and len(media.items) > 0:
+                media = media.items[0]
+            return media.viewOffset
+        return 0
+
+    @property
+    def shuffle(self) -> bool:
+        """Return value of shuffle parameter."""
+        shuffle = self._params.get("shuffle", False)
+        if isinstance(shuffle, str):
+            shuffle = result_as_boolean(shuffle)
+        return shuffle
+
+    @property
+    def continuous(self) -> bool:
+        """Return value of continuous parameter."""
+        continuous = self._params.get("continuous", False)
+        if isinstance(continuous, str):
+            continuous = result_as_boolean(continuous)
+        return continuous

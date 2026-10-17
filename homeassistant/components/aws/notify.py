@@ -1,27 +1,31 @@
 """AWS platform for notify component."""
+
 import asyncio
 import base64
 import json
 import logging
+from typing import Any, override
 
 from aiobotocore.session import AioSession
 
 from homeassistant.components.notify import (
+    ATTR_DATA,
     ATTR_TARGET,
     ATTR_TITLE,
     ATTR_TITLE_DEFAULT,
     BaseNotificationService,
 )
-from homeassistant.components.notify.const import ATTR_DATA
 from homeassistant.const import (
     CONF_NAME,
     CONF_PLATFORM,
     CONF_PROFILE_NAME,
     CONF_SERVICE,
 )
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.json import JSONEncoder
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from .const import CONF_CONTEXT, CONF_CREDENTIAL_NAME, CONF_REGION, DATA_SESSIONS
+from .const import CONF_CONTEXT, CONF_CREDENTIAL_NAME, CONF_REGION, DATA_AWS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,7 +36,11 @@ async def get_available_regions(hass, service):
     return await session.get_available_regions(service)
 
 
-async def async_get_service(hass, config, discovery_info=None):
+async def async_get_service(
+    hass: HomeAssistant,
+    config: ConfigType,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> AWSNotify | None:
     """Get the AWS notification service."""
     if discovery_info is None:
         _LOGGER.error("Please config aws notify platform in aws component")
@@ -66,10 +74,12 @@ async def async_get_service(hass, config, discovery_info=None):
     if CONF_CONTEXT in aws_config:
         del aws_config[CONF_CONTEXT]
 
+    sessions = hass.data[DATA_AWS].sessions
+
     if not aws_config:
         # no platform config, use the first aws component credential instead
-        if hass.data[DATA_SESSIONS]:
-            session = next(iter(hass.data[DATA_SESSIONS].values()))
+        if sessions:
+            session = next(iter(sessions.values()))
         else:
             _LOGGER.error("Missing aws credential for %s", config[CONF_NAME])
             return None
@@ -77,7 +87,7 @@ async def async_get_service(hass, config, discovery_info=None):
     if session is None:
         credential_name = aws_config.get(CONF_CREDENTIAL_NAME)
         if credential_name is not None:
-            session = hass.data[DATA_SESSIONS].get(credential_name)
+            session = sessions.get(credential_name)
             if session is None:
                 _LOGGER.warning("No available aws session for %s", credential_name)
             del aws_config[CONF_CREDENTIAL_NAME]
@@ -105,6 +115,9 @@ async def async_get_service(hass, config, discovery_info=None):
     if service == "sqs":
         return AWSSQS(session, aws_config)
 
+    if service == "events":
+        return AWSEventBridge(session, aws_config)
+
     # should not reach here since service was checked in schema
     return None
 
@@ -128,7 +141,8 @@ class AWSLambda(AWSNotify):
         super().__init__(session, aws_config)
         self.context = context
 
-    async def async_send_message(self, message="", **kwargs):
+    @override
+    async def async_send_message(self, message: str = "", **kwargs: Any) -> None:
         """Send notification to specified LAMBDA ARN."""
         if not kwargs.get(ATTR_TARGET):
             _LOGGER.error("At least one target is required")
@@ -142,15 +156,14 @@ class AWSLambda(AWSNotify):
         async with self.session.create_client(
             self.service, **self.aws_config
         ) as client:
-            tasks = []
-            for target in kwargs.get(ATTR_TARGET, []):
-                tasks.append(
-                    client.invoke(
-                        FunctionName=target,
-                        Payload=json_payload,
-                        ClientContext=self.context,
-                    )
+            tasks = [
+                client.invoke(
+                    FunctionName=target,
+                    Payload=json_payload,
+                    ClientContext=self.context,
                 )
+                for target in kwargs.get(ATTR_TARGET, [])
+            ]
 
             if tasks:
                 await asyncio.gather(*tasks)
@@ -161,7 +174,8 @@ class AWSSNS(AWSNotify):
 
     service = "sns"
 
-    async def async_send_message(self, message="", **kwargs):
+    @override
+    async def async_send_message(self, message: str = "", **kwargs: Any) -> None:
         """Send notification to specified SNS ARN."""
         if not kwargs.get(ATTR_TARGET):
             _LOGGER.error("At least one target is required")
@@ -179,16 +193,15 @@ class AWSSNS(AWSNotify):
         async with self.session.create_client(
             self.service, **self.aws_config
         ) as client:
-            tasks = []
-            for target in kwargs.get(ATTR_TARGET, []):
-                tasks.append(
-                    client.publish(
-                        TargetArn=target,
-                        Message=message,
-                        Subject=subject,
-                        MessageAttributes=message_attributes,
-                    )
+            tasks = [
+                client.publish(
+                    TargetArn=target,
+                    Message=message,
+                    Subject=subject,
+                    MessageAttributes=message_attributes,
                 )
+                for target in kwargs.get(ATTR_TARGET, [])
+            ]
 
             if tasks:
                 await asyncio.gather(*tasks)
@@ -199,7 +212,8 @@ class AWSSQS(AWSNotify):
 
     service = "sqs"
 
-    async def async_send_message(self, message="", **kwargs):
+    @override
+    async def async_send_message(self, message: str = "", **kwargs: Any) -> None:
         """Send notification to specified SQS ARN."""
         if not kwargs.get(ATTR_TARGET):
             _LOGGER.error("At least one target is required")
@@ -219,15 +233,63 @@ class AWSSQS(AWSNotify):
         async with self.session.create_client(
             self.service, **self.aws_config
         ) as client:
-            tasks = []
-            for target in kwargs.get(ATTR_TARGET, []):
-                tasks.append(
-                    client.send_message(
-                        QueueUrl=target,
-                        MessageBody=json_body,
-                        MessageAttributes=message_attributes,
-                    )
+            tasks = [
+                client.send_message(
+                    QueueUrl=target,
+                    MessageBody=json_body,
+                    MessageAttributes=message_attributes,
                 )
+                for target in kwargs.get(ATTR_TARGET, [])
+            ]
 
             if tasks:
                 await asyncio.gather(*tasks)
+
+
+class AWSEventBridge(AWSNotify):
+    """Implement the notification service for the AWS EventBridge service."""
+
+    service = "events"
+
+    @override
+    async def async_send_message(self, message: str = "", **kwargs: Any) -> None:
+        """Send notification to specified EventBus."""
+
+        cleaned_kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        data = cleaned_kwargs.get(ATTR_DATA, {})
+        detail = (
+            json.dumps(data["detail"])
+            if "detail" in data
+            else json.dumps({"message": message})
+        )
+
+        async with self.session.create_client(
+            self.service, **self.aws_config
+        ) as client:
+            entries = []
+            for target in kwargs.get(ATTR_TARGET, [None]):
+                entry = {
+                    "Source": data.get("source", "homeassistant"),
+                    "Resources": data.get("resources", []),
+                    "Detail": detail,
+                    "DetailType": data.get("detail_type", ""),
+                }
+                if target:
+                    entry["EventBusName"] = target
+
+                entries.append(entry)
+            tasks = [
+                client.put_events(Entries=entries[i : min(i + 10, len(entries))])
+                for i in range(0, len(entries), 10)
+            ]
+
+            if tasks:
+                results = await asyncio.gather(*tasks)
+                for result in results:
+                    for entry in result["Entries"]:
+                        if len(entry.get("EventId", "")) == 0:
+                            _LOGGER.error(
+                                "Failed to send event: ErrorCode=%s ErrorMessage=%s",
+                                entry["ErrorCode"],
+                                entry["ErrorMessage"],
+                            )

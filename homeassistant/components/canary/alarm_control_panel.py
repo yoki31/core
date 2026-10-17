@@ -1,60 +1,48 @@
 """Support for Canary alarm."""
-from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
-from canary.api import (
-    LOCATION_MODE_AWAY,
-    LOCATION_MODE_HOME,
-    LOCATION_MODE_NIGHT,
-    Location,
-)
+from canary.const import LOCATION_MODE_AWAY, LOCATION_MODE_HOME, LOCATION_MODE_NIGHT
+from canary.model import Location
 
-from homeassistant.components.alarm_control_panel import AlarmControlPanelEntity
-from homeassistant.components.alarm_control_panel.const import (
-    SUPPORT_ALARM_ARM_AWAY,
-    SUPPORT_ALARM_ARM_HOME,
-    SUPPORT_ALARM_ARM_NIGHT,
-)
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    STATE_ALARM_ARMED_AWAY,
-    STATE_ALARM_ARMED_HOME,
-    STATE_ALARM_ARMED_NIGHT,
-    STATE_ALARM_DISARMED,
+from homeassistant.components.alarm_control_panel import (
+    AlarmControlPanelEntity,
+    AlarmControlPanelEntityFeature,
+    AlarmControlPanelState,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DATA_COORDINATOR, DOMAIN
-from .coordinator import CanaryDataUpdateCoordinator
+from .coordinator import CanaryConfigEntry, CanaryDataUpdateCoordinator
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: CanaryConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Canary alarm control panels based on a config entry."""
-    coordinator: CanaryDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][
-        DATA_COORDINATOR
-    ]
+    coordinator = entry.runtime_data
     alarms = [
         CanaryAlarm(coordinator, location)
         for location_id, location in coordinator.data["locations"].items()
     ]
 
-    async_add_entities(alarms, True)
+    async_add_entities(alarms)
 
 
-class CanaryAlarm(CoordinatorEntity, AlarmControlPanelEntity):
+class CanaryAlarm(
+    CoordinatorEntity[CanaryDataUpdateCoordinator], AlarmControlPanelEntity
+):
     """Representation of a Canary alarm control panel."""
 
-    coordinator: CanaryDataUpdateCoordinator
     _attr_supported_features = (
-        SUPPORT_ALARM_ARM_HOME | SUPPORT_ALARM_ARM_AWAY | SUPPORT_ALARM_ARM_NIGHT
+        AlarmControlPanelEntityFeature.ARM_HOME
+        | AlarmControlPanelEntityFeature.ARM_AWAY
+        | AlarmControlPanelEntityFeature.ARM_NIGHT
     )
+    _attr_code_arm_required = False
 
     def __init__(
         self, coordinator: CanaryDataUpdateCoordinator, location: Location
@@ -71,40 +59,46 @@ class CanaryAlarm(CoordinatorEntity, AlarmControlPanelEntity):
         return self.coordinator.data["locations"][self._location_id]
 
     @property
-    def state(self) -> str | None:
+    @override
+    def alarm_state(self) -> AlarmControlPanelState | None:
         """Return the state of the device."""
         if self.location.is_private:
-            return STATE_ALARM_DISARMED
+            return AlarmControlPanelState.DISARMED
 
         mode = self.location.mode
         if mode.name == LOCATION_MODE_AWAY:
-            return STATE_ALARM_ARMED_AWAY
+            return AlarmControlPanelState.ARMED_AWAY
         if mode.name == LOCATION_MODE_HOME:
-            return STATE_ALARM_ARMED_HOME
+            return AlarmControlPanelState.ARMED_HOME
         if mode.name == LOCATION_MODE_NIGHT:
-            return STATE_ALARM_ARMED_NIGHT
+            return AlarmControlPanelState.ARMED_NIGHT
 
         return None
 
     @property
+    @override
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes."""
         return {"private": self.location.is_private}
 
+    @override
     def alarm_disarm(self, code: str | None = None) -> None:
         """Send disarm command."""
         self.coordinator.canary.set_location_mode(
             self._location_id, self.location.mode.name, True
         )
 
+    @override
     def alarm_arm_home(self, code: str | None = None) -> None:
         """Send arm home command."""
         self.coordinator.canary.set_location_mode(self._location_id, LOCATION_MODE_HOME)
 
+    @override
     def alarm_arm_away(self, code: str | None = None) -> None:
         """Send arm away command."""
         self.coordinator.canary.set_location_mode(self._location_id, LOCATION_MODE_AWAY)
 
+    @override
     def alarm_arm_night(self, code: str | None = None) -> None:
         """Send arm night command."""
         self.coordinator.canary.set_location_mode(

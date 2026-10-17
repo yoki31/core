@@ -1,110 +1,90 @@
 """The Nina integration."""
-from __future__ import annotations
 
-import datetime as dt
 from typing import Any
 
-from async_timeout import timeout
-from pynina import ApiError, Nina
-
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.util import dt as dt_util
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 
 from .const import (
-    _LOGGER,
-    ATTR_EXPIRES,
-    ATTR_HEADLINE,
-    ATTR_ID,
-    ATTR_SENT,
-    ATTR_START,
+    ALL_MATCH_REGEX,
+    CONF_AREA_FILTER,
     CONF_FILTER_CORONA,
-    CONF_REGIONS,
+    CONF_FILTERS,
+    CONF_HEADLINE_FILTER,
     DOMAIN,
-    SCAN_INTERVAL,
+    LOGGER,
+    NO_MATCH_REGEX,
 )
+from .coordinator import NinaConfigEntry, NINADataUpdateCoordinator
+from .services import async_setup_services
 
-PLATFORMS: list[str] = [Platform.BINARY_SENSOR]
+PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: NinaConfigEntry) -> None:
     """Set up platform from a ConfigEntry."""
-
-    regions: dict[str, str] = entry.data[CONF_REGIONS]
-
-    coordinator = NINADataUpdateCoordinator(
-        hass, regions, entry.data[CONF_FILTER_CORONA]
-    )
+    coordinator = NINADataUpdateCoordinator(hass, entry)
 
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    entry.runtime_data = coordinator
 
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+
+async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
+    """Set up services."""
+    async_setup_services(hass)
     return True
 
 
-class NINADataUpdateCoordinator(DataUpdateCoordinator):
-    """Class to manage fetching NINA data API."""
+async def async_unload_entry(hass: HomeAssistant, entry: NinaConfigEntry) -> None:
+    """Unload a config entry."""
+    await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
 
-    def __init__(
-        self, hass: HomeAssistant, regions: dict[str, str], corona_filter: bool
-    ) -> None:
-        """Initialize."""
-        self._regions: dict[str, str] = regions
-        self._nina: Nina = Nina(async_get_clientsession(hass))
-        self.warnings: dict[str, Any] = {}
-        self.corona_filter: bool = corona_filter
 
-        for region in regions:
-            self._nina.addRegion(region)
+async def async_migrate_entry(hass: HomeAssistant, entry: NinaConfigEntry) -> None:
+    """Migrate the config to the new format."""
 
-        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL)
+    version = entry.version
+    minor_version = entry.minor_version
 
-    async def _async_update_data(self) -> dict[str, Any]:
-        """Update data."""
-        async with timeout(10):
-            try:
-                await self._nina.update()
-            except ApiError as err:
-                raise UpdateFailed(err) from err
-            return self._parse_data()
+    LOGGER.debug("Migrating from version %s.%s", version, minor_version)
 
-    def _parse_data(self) -> dict[str, Any]:
-        """Parse warning data."""
+    new_data: dict[str, Any] = {**entry.data, CONF_FILTERS: {}}
 
-        return_data: dict[str, Any] = {}
+    if version == 1 and minor_version == 1:
+        if CONF_HEADLINE_FILTER not in entry.data:
+            filter_regex = NO_MATCH_REGEX
 
-        for region_id, raw_warnings in self._nina.warnings.items():
-            warnings_for_regions: list[Any] = []
+            if entry.data.get(CONF_FILTER_CORONA, None):
+                filter_regex = ".*corona.*"
 
-            for raw_warn in raw_warnings:
-                if "corona" in raw_warn.headline.lower() and self.corona_filter:
-                    continue
+            new_data[CONF_HEADLINE_FILTER] = filter_regex
+            new_data.pop(CONF_FILTER_CORONA, None)
 
-                warn_obj: dict[str, Any] = {
-                    ATTR_ID: raw_warn.id,
-                    ATTR_HEADLINE: raw_warn.headline,
-                    ATTR_SENT: self._to_utc(raw_warn.sent),
-                    ATTR_START: self._to_utc(raw_warn.start),
-                    ATTR_EXPIRES: self._to_utc(raw_warn.expires),
-                }
-                warnings_for_regions.append(warn_obj)
+        if CONF_AREA_FILTER not in entry.data:
+            new_data[CONF_AREA_FILTER] = ALL_MATCH_REGEX
 
-            return_data[region_id] = warnings_for_regions
+        hass.config_entries.async_update_entry(
+            entry,
+            data=new_data,
+            minor_version=2,
+        )
+        minor_version = 2
 
-        return return_data
+    if version == 1 and minor_version == 2:
+        new_data[CONF_FILTERS][CONF_HEADLINE_FILTER] = entry.data[CONF_HEADLINE_FILTER]
+        new_data.pop(CONF_HEADLINE_FILTER, None)
 
-    @staticmethod
-    def _to_utc(input_time: str) -> str | None:
-        if input_time:
-            return (
-                dt.datetime.fromisoformat(input_time)
-                .astimezone(dt_util.UTC)
-                .isoformat()
-            )
-        return None
+        new_data[CONF_FILTERS][CONF_AREA_FILTER] = entry.data[CONF_AREA_FILTER]
+        new_data.pop(CONF_AREA_FILTER, None)
+
+        hass.config_entries.async_update_entry(
+            entry,
+            data=new_data,
+            minor_version=3,
+        )

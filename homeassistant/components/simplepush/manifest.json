@@ -1,9 +1,12 @@
 {
   "domain": "simplepush",
   "name": "Simplepush",
+  "categories": ["messaging_notifications.push_notifications"],
+  "codeowners": ["@engrbm87"],
+  "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/simplepush",
-  "requirements": ["simplepush==1.1.4"],
-  "codeowners": [],
+  "integration_type": "service",
   "iot_class": "cloud_polling",
-  "loggers": ["simplepush"]
+  "loggers": ["simplepush"],
+  "requirements": ["simplepush[legacy]==3.8.0"]
 }

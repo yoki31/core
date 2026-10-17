@@ -1,40 +1,17 @@
-"""Tests for the Diagnostics integration."""
-from http import HTTPStatus
+"""Compatibility imports for the Home Assistant pytest helpers."""
 
-from homeassistant.setup import async_setup_component
-
-
-async def _get_diagnostics_for_config_entry(hass, hass_client, config_entry):
-    """Return the diagnostics config entry for the specified domain."""
-    assert await async_setup_component(hass, "diagnostics", {})
-
-    client = await hass_client()
-    response = await client.get(
-        f"/api/diagnostics/config_entry/{config_entry.entry_id}"
-    )
-    assert response.status == HTTPStatus.OK
-    return await response.json()
-
-
-async def get_diagnostics_for_config_entry(hass, hass_client, config_entry):
-    """Return the diagnostics config entry for the specified domain."""
-    data = await _get_diagnostics_for_config_entry(hass, hass_client, config_entry)
-    return data["data"]
-
-
-async def _get_diagnostics_for_device(hass, hass_client, config_entry, device):
-    """Return the diagnostics for the specified device."""
-    assert await async_setup_component(hass, "diagnostics", {})
-
-    client = await hass_client()
-    response = await client.get(
-        f"/api/diagnostics/config_entry/{config_entry.entry_id}/device/{device.id}"
-    )
-    assert response.status == HTTPStatus.OK
-    return await response.json()
-
-
-async def get_diagnostics_for_device(hass, hass_client, config_entry, device):
-    """Return the diagnostics for the specified device."""
-    data = await _get_diagnostics_for_device(hass, hass_client, config_entry, device)
-    return data["data"]
+from pytest_homeassistant.components.diagnostics import (
+    DOMAIN as DOMAIN,
+    ClientSessionGenerator as ClientSessionGenerator,
+    ConfigEntry as ConfigEntry,
+    DeviceEntry as DeviceEntry,
+    HomeAssistant as HomeAssistant,
+    HTTPStatus as HTTPStatus,
+    JsonObjectType as JsonObjectType,
+    _get_diagnostics_for_config_entry as _get_diagnostics_for_config_entry,
+    _get_diagnostics_for_device as _get_diagnostics_for_device,
+    async_setup_component as async_setup_component,
+    cast as cast,
+    get_diagnostics_for_config_entry as get_diagnostics_for_config_entry,
+    get_diagnostics_for_device as get_diagnostics_for_device,
+)

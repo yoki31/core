@@ -1,14 +1,12 @@
 {
   "domain": "meteoclimatic",
   "name": "Meteoclimatic",
+  "categories": ["weather_alerts"],
+  "codeowners": ["@adrianmo"],
   "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/meteoclimatic",
-  "requirements": [
-    "pymeteoclimatic==0.0.6"
-  ],
-  "codeowners": [
-    "@adrianmo"
-  ],
+  "integration_type": "service",
   "iot_class": "cloud_polling",
-  "loggers": ["meteoclimatic"]
+  "loggers": ["meteoclimatic"],
+  "requirements": ["pymeteoclimatic==0.1.1"]
 }

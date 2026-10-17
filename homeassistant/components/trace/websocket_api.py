@@ -1,9 +1,11 @@
 """Websocket API for automation."""
+
 import json
+from typing import Any
 
-import voluptuous as vol
+import probatio
 
-from homeassistant.components import trace, websocket_api
+from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.dispatcher import (
@@ -24,7 +26,7 @@ from homeassistant.helpers.script import (
     debug_stop,
 )
 
-# mypy: allow-untyped-calls, allow-untyped-defs
+from .util import async_get_trace, async_list_contexts, async_list_traces
 
 TRACE_DOMAINS = ("automation", "script")
 
@@ -47,20 +49,24 @@ def async_setup(hass: HomeAssistant) -> None:
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "trace/get",
-        vol.Required("domain"): vol.In(TRACE_DOMAINS),
-        vol.Required("item_id"): str,
-        vol.Required("run_id"): str,
+        probatio.Required("type"): "trace/get",
+        probatio.Required("domain"): probatio.In(TRACE_DOMAINS),
+        probatio.Required("item_id"): str,
+        probatio.Required("run_id"): str,
     }
 )
 @websocket_api.async_response
-async def websocket_trace_get(hass, connection, msg):
+async def websocket_trace_get(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Get a script or automation trace."""
     key = f"{msg['domain']}.{msg['item_id']}"
     run_id = msg["run_id"]
 
     try:
-        requested_trace = await trace.async_get_trace(hass, key, run_id)
+        requested_trace = await async_get_trace(hass, key, run_id)
     except KeyError:
         connection.send_error(
             msg["id"], websocket_api.ERR_NOT_FOUND, "The trace could not be found"
@@ -77,18 +83,22 @@ async def websocket_trace_get(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "trace/list",
-        vol.Required("domain", "id"): vol.In(TRACE_DOMAINS),
-        vol.Optional("item_id", "id"): str,
+        probatio.Required("type"): "trace/list",
+        probatio.Required("domain", "id"): probatio.In(TRACE_DOMAINS),
+        probatio.Optional("item_id", "id"): str,
     }
 )
 @websocket_api.async_response
-async def websocket_trace_list(hass, connection, msg):
+async def websocket_trace_list(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Summarize script and automation traces."""
     wanted_domain = msg["domain"]
     key = f"{msg['domain']}.{msg['item_id']}" if "item_id" in msg else None
 
-    traces = await trace.async_list_traces(hass, wanted_domain, key)
+    traces = await async_list_traces(hass, wanted_domain, key)
 
     connection.send_result(msg["id"], traces)
 
@@ -96,17 +106,21 @@ async def websocket_trace_list(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "trace/contexts",
-        vol.Inclusive("domain", "id"): vol.In(TRACE_DOMAINS),
-        vol.Inclusive("item_id", "id"): str,
+        probatio.Required("type"): "trace/contexts",
+        probatio.Inclusive("domain", "id"): probatio.In(TRACE_DOMAINS),
+        probatio.Inclusive("item_id", "id"): str,
     }
 )
 @websocket_api.async_response
-async def websocket_trace_contexts(hass, connection, msg):
+async def websocket_trace_contexts(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Retrieve contexts we have traces for."""
     key = f"{msg['domain']}.{msg['item_id']}" if "item_id" in msg else None
 
-    contexts = await trace.async_list_contexts(hass, key)
+    contexts = await async_list_contexts(hass, key)
 
     connection.send_result(msg["id"], contexts)
 
@@ -115,18 +129,22 @@ async def websocket_trace_contexts(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "trace/debug/breakpoint/set",
-        vol.Required("domain"): vol.In(TRACE_DOMAINS),
-        vol.Required("item_id"): str,
-        vol.Required("node"): str,
-        vol.Optional("run_id"): str,
+        probatio.Required("type"): "trace/debug/breakpoint/set",
+        probatio.Required("domain"): probatio.In(TRACE_DOMAINS),
+        probatio.Required("item_id"): str,
+        probatio.Required("node"): str,
+        probatio.Optional("run_id"): str,
     }
 )
-def websocket_breakpoint_set(hass, connection, msg):
+def websocket_breakpoint_set(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Set breakpoint."""
     key = f"{msg['domain']}.{msg['item_id']}"
-    node = msg["node"]
-    run_id = msg.get("run_id")
+    node: str = msg["node"]
+    run_id: str | None = msg.get("run_id")
 
     if (
         SCRIPT_BREAKPOINT_HIT not in hass.data.get(DATA_DISPATCHER, {})
@@ -142,18 +160,22 @@ def websocket_breakpoint_set(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "trace/debug/breakpoint/clear",
-        vol.Required("domain"): vol.In(TRACE_DOMAINS),
-        vol.Required("item_id"): str,
-        vol.Required("node"): str,
-        vol.Optional("run_id"): str,
+        probatio.Required("type"): "trace/debug/breakpoint/clear",
+        probatio.Required("domain"): probatio.In(TRACE_DOMAINS),
+        probatio.Required("item_id"): str,
+        probatio.Required("node"): str,
+        probatio.Optional("run_id"): str,
     }
 )
-def websocket_breakpoint_clear(hass, connection, msg):
+def websocket_breakpoint_clear(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Clear breakpoint."""
     key = f"{msg['domain']}.{msg['item_id']}"
-    node = msg["node"]
-    run_id = msg.get("run_id")
+    node: str = msg["node"]
+    run_id: str | None = msg.get("run_id")
 
     result = breakpoint_clear(hass, key, run_id, node)
 
@@ -162,8 +184,14 @@ def websocket_breakpoint_clear(hass, connection, msg):
 
 @callback
 @websocket_api.require_admin
-@websocket_api.websocket_command({vol.Required("type"): "trace/debug/breakpoint/list"})
-def websocket_breakpoint_list(hass, connection, msg):
+@websocket_api.websocket_command(
+    {probatio.Required("type"): "trace/debug/breakpoint/list"}
+)
+def websocket_breakpoint_list(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """List breakpoints."""
     breakpoints = breakpoint_list(hass)
     for _breakpoint in breakpoints:
@@ -176,13 +204,17 @@ def websocket_breakpoint_list(hass, connection, msg):
 @callback
 @websocket_api.require_admin
 @websocket_api.websocket_command(
-    {vol.Required("type"): "trace/debug/breakpoint/subscribe"}
+    {probatio.Required("type"): "trace/debug/breakpoint/subscribe"}
 )
-def websocket_subscribe_breakpoint_events(hass, connection, msg):
+def websocket_subscribe_breakpoint_events(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Subscribe to breakpoint events."""
 
     @callback
-    def breakpoint_hit(key, run_id, node):
+    def breakpoint_hit(key: str, run_id: str, node: str) -> None:
         """Forward events to websocket."""
         domain, item_id = key.split(".", 1)
         connection.send_message(
@@ -202,7 +234,7 @@ def websocket_subscribe_breakpoint_events(hass, connection, msg):
     )
 
     @callback
-    def unsub():
+    def unsub() -> None:
         """Unsubscribe from breakpoint events."""
         remove_signal()
         if (
@@ -221,16 +253,20 @@ def websocket_subscribe_breakpoint_events(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "trace/debug/continue",
-        vol.Required("domain"): vol.In(TRACE_DOMAINS),
-        vol.Required("item_id"): str,
-        vol.Required("run_id"): str,
+        probatio.Required("type"): "trace/debug/continue",
+        probatio.Required("domain"): probatio.In(TRACE_DOMAINS),
+        probatio.Required("item_id"): str,
+        probatio.Required("run_id"): str,
     }
 )
-def websocket_debug_continue(hass, connection, msg):
+def websocket_debug_continue(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Resume execution of halted script or automation."""
     key = f"{msg['domain']}.{msg['item_id']}"
-    run_id = msg["run_id"]
+    run_id: str = msg["run_id"]
 
     result = debug_continue(hass, key, run_id)
 
@@ -241,16 +277,20 @@ def websocket_debug_continue(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "trace/debug/step",
-        vol.Required("domain"): vol.In(TRACE_DOMAINS),
-        vol.Required("item_id"): str,
-        vol.Required("run_id"): str,
+        probatio.Required("type"): "trace/debug/step",
+        probatio.Required("domain"): probatio.In(TRACE_DOMAINS),
+        probatio.Required("item_id"): str,
+        probatio.Required("run_id"): str,
     }
 )
-def websocket_debug_step(hass, connection, msg):
+def websocket_debug_step(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Single step a halted script or automation."""
     key = f"{msg['domain']}.{msg['item_id']}"
-    run_id = msg["run_id"]
+    run_id: str = msg["run_id"]
 
     result = debug_step(hass, key, run_id)
 
@@ -261,16 +301,20 @@ def websocket_debug_step(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "trace/debug/stop",
-        vol.Required("domain"): vol.In(TRACE_DOMAINS),
-        vol.Required("item_id"): str,
-        vol.Required("run_id"): str,
+        probatio.Required("type"): "trace/debug/stop",
+        probatio.Required("domain"): probatio.In(TRACE_DOMAINS),
+        probatio.Required("item_id"): str,
+        probatio.Required("run_id"): str,
     }
 )
-def websocket_debug_stop(hass, connection, msg):
+def websocket_debug_stop(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
     """Stop a halted script or automation."""
     key = f"{msg['domain']}.{msg['item_id']}"
-    run_id = msg["run_id"]
+    run_id: str = msg["run_id"]
 
     result = debug_stop(hass, key, run_id)
 

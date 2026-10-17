@@ -1,30 +1,54 @@
 {
   "config": {
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "no_devices_found": "[%key:common::config_flow::abort::no_devices_found%]"
+    },
+    "error": {
+      "bulb_time_out": "Cannot connect to the bulb. Maybe the bulb is offline or a wrong IP was entered. Please turn on the light and try again!",
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "no_ip": "Not a valid IP address.",
+      "no_wiz_light": "The bulb cannot be connected via WiZ integration.",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
+    },
     "flow_title": "{name} ({host})",
     "step": {
-      "user": {
-        "data": {
-          "host": "[%key:common::config_flow::data::host%]"
-        },
-        "description": "If you leave the host empty, discovery will be used to find devices."
-      },
       "discovery_confirm": {
-        "description": "Do you want to setup {name} ({host})?"
+        "description": "Do you want to set up {name} ({host})?"
       },
       "pick_device": {
         "data": {
-          "device": "Device"
+          "device": "[%key:common::config_flow::data::device%]"
         }
+      },
+      "user": {
+        "data": {
+          "host": "[%key:common::config_flow::data::ip%]"
+        },
+        "description": "If you leave the IP address empty, discovery will be used to find devices."
       }
+    }
+  },
+  "entity": {
+    "number": {
+      "dual_head_ratio": {
+        "name": "Dual head ratio"
+      },
+      "effect_speed": {
+        "name": "Effect speed"
+      }
+    }
+  },
+  "exceptions": {
+    "communication_error": {
+      "message": "Error while communicating with the WiZ device"
     },
-    "error": {
-      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
-      "unknown": "[%key:common::config_flow::error::unknown%]",
-      "bulb_time_out": "Can not connect to the bulb. Maybe the bulb is offline or a wrong IP/host was entered. Please turn on the light and try again!",
-      "no_wiz_light": "The bulb can not be connected via WiZ Platform integration."
+    "not_supported": {
+      "message": "The WiZ device does not support this command"
     },
-    "abort": {
-      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+    "timeout": {
+      "message": "Timed out waiting for the WiZ device to respond"
     }
   }
 }

@@ -1,23 +1,38 @@
 """Test account link services."""
+
 import asyncio
+from collections.abc import Generator
 import logging
 from time import time
 from unittest.mock import AsyncMock, Mock, patch
 
+from aiohttp import ClientError, ClientResponseError, RequestInfo
 import pytest
+from yarl import URL
 
-from homeassistant import config_entries, data_entry_flow
+from homeassistant import config_entries
 from homeassistant.components.cloud import account_link
+from homeassistant.components.cloud.const import DATA_CLOUD
+from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import (
+    OAuth2TokenRequestConnectionError,
+    OAuth2TokenRequestError,
+    OAuth2TokenRequestReauthError,
+    OAuth2TokenRequestTransientError,
+)
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.util.dt import utcnow
 
-from tests.common import async_fire_time_changed, mock_platform
+from tests.common import MockConfigEntry, async_fire_time_changed, mock_platform
 
 TEST_DOMAIN = "oauth2_test"
 
 
 @pytest.fixture
-def flow_handler(hass):
+def flow_handler(
+    hass: HomeAssistant,
+) -> Generator[type[config_entry_oauth2_flow.AbstractOAuth2FlowHandler]]:
     """Return a registered config flow."""
 
     mock_platform(hass, f"{TEST_DOMAIN}.config_flow")
@@ -36,16 +51,50 @@ def flow_handler(hass):
         yield TestFlowHandler
 
 
-async def test_setup_provide_implementation(hass):
+async def test_setup_provide_implementation(hass: HomeAssistant) -> None:
     """Test that we provide implementations."""
+    legacy_entry = MockConfigEntry(
+        domain="legacy",
+        version=1,
+        data={"auth_implementation": "cloud"},
+    )
+    none_cloud_entry = MockConfigEntry(
+        domain="no_cloud",
+        version=1,
+        data={"auth_implementation": "somethingelse"},
+    )
+    none_cloud_entry.add_to_hass(hass)
+    legacy_entry.add_to_hass(hass)
     account_link.async_setup(hass)
 
-    with patch(
-        "homeassistant.components.cloud.account_link._get_services",
-        return_value=[
-            {"service": "test", "min_version": "0.1.0"},
-            {"service": "too_new", "min_version": "1000000.0.0"},
-        ],
+    with (
+        patch(
+            "homeassistant.components.cloud.account_link._get_services",
+            return_value=[
+                {"service": "test", "min_version": "0.1.0"},
+                {"service": "too_new", "min_version": "1000000.0.0"},
+                {"service": "dev", "min_version": "2022.9.0"},
+                {
+                    "service": "deprecated",
+                    "min_version": "0.1.0",
+                    "accepts_new_authorizations": False,
+                },
+                {
+                    "service": "legacy",
+                    "min_version": "0.1.0",
+                    "accepts_new_authorizations": False,
+                },
+                {
+                    "service": "no_cloud",
+                    "min_version": "0.1.0",
+                    "accepts_new_authorizations": False,
+                },
+            ],
+        ),
+        patch(
+            "homeassistant.components.cloud.account_link.HA_VERSION",
+            "2022.9.0.dev20220817",
+        ),
     ):
         assert (
             await config_entry_oauth2_flow.async_get_implementations(
@@ -57,8 +106,25 @@ async def test_setup_provide_implementation(hass):
             await config_entry_oauth2_flow.async_get_implementations(hass, "too_new")
             == {}
         )
+        assert (
+            await config_entry_oauth2_flow.async_get_implementations(hass, "deprecated")
+            == {}
+        )
+        assert (
+            await config_entry_oauth2_flow.async_get_implementations(hass, "no_cloud")
+            == {}
+        )
+
         implementations = await config_entry_oauth2_flow.async_get_implementations(
             hass, "test"
+        )
+
+        legacy_implementations = (
+            await config_entry_oauth2_flow.async_get_implementations(hass, "legacy")
+        )
+
+        dev_implementations = await config_entry_oauth2_flow.async_get_implementations(
+            hass, "dev"
         )
 
     assert "cloud" in implementations
@@ -66,17 +132,30 @@ async def test_setup_provide_implementation(hass):
     assert implementations["cloud"].service == "test"
     assert implementations["cloud"].hass is hass
 
+    assert "cloud" in legacy_implementations
+    assert legacy_implementations["cloud"].domain == "cloud"
+    assert legacy_implementations["cloud"].service == "legacy"
+    assert legacy_implementations["cloud"].hass is hass
 
-async def test_get_services_cached(hass):
+    assert "cloud" in dev_implementations
+    assert dev_implementations["cloud"].domain == "cloud"
+    assert dev_implementations["cloud"].service == "dev"
+    assert dev_implementations["cloud"].hass is hass
+
+
+async def test_get_services_cached(hass: HomeAssistant) -> None:
     """Test that we cache services."""
-    hass.data["cloud"] = None
+    hass.data[DATA_CLOUD] = None
 
     services = 1
 
-    with patch.object(account_link, "CACHE_TIMEOUT", 0), patch(
-        "hass_nabucasa.account_link.async_fetch_available_services",
-        side_effect=lambda _: services,
-    ) as mock_fetch:
+    with (
+        patch.object(account_link, "CACHE_TIMEOUT", 0),
+        patch(
+            "hass_nabucasa.account_link.async_fetch_available_services",
+            side_effect=lambda _: services,
+        ) as mock_fetch,
+    ):
         assert await account_link._get_services(hass) == 1
 
         services = 2
@@ -96,21 +175,28 @@ async def test_get_services_cached(hass):
         assert await account_link._get_services(hass) == 4
 
 
-async def test_get_services_error(hass):
+async def test_get_services_error(hass: HomeAssistant) -> None:
     """Test that we cache services."""
-    hass.data["cloud"] = None
+    hass.data[DATA_CLOUD] = None
 
-    with patch.object(account_link, "CACHE_TIMEOUT", 0), patch(
-        "hass_nabucasa.account_link.async_fetch_available_services",
-        side_effect=asyncio.TimeoutError,
+    with (
+        patch.object(account_link, "CACHE_TIMEOUT", 0),
+        patch(
+            "hass_nabucasa.account_link.async_fetch_available_services",
+            side_effect=TimeoutError,
+        ),
+        pytest.raises(config_entry_oauth2_flow.ImplementationUnavailableError),
     ):
-        assert await account_link._get_services(hass) == []
-        assert account_link.DATA_SERVICES not in hass.data
+        await account_link._get_services(hass)
 
 
-async def test_implementation(hass, flow_handler, current_request_with_host):
+@pytest.mark.usefixtures("current_request_with_host")
+async def test_implementation(
+    hass: HomeAssistant,
+    flow_handler: type[config_entry_oauth2_flow.AbstractOAuth2FlowHandler],
+) -> None:
     """Test Cloud OAuth2 implementation."""
-    hass.data["cloud"] = None
+    hass.data[DATA_CLOUD] = None
 
     impl = account_link.CloudOAuth2Implementation(hass, "test")
     assert impl.name == "Home Assistant Cloud"
@@ -132,7 +218,7 @@ async def test_implementation(hass, flow_handler, current_request_with_host):
             TEST_DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
 
-    assert result["type"] == data_entry_flow.RESULT_TYPE_EXTERNAL_STEP
+    assert result["type"] is FlowResultType.EXTERNAL_STEP
     assert result["url"] == "http://example.com/auth"
 
     flow_finished.set_result(
@@ -168,3 +254,75 @@ async def test_implementation(hass, flow_handler, current_request_with_host):
         )
         is impl
     )
+
+
+def _mock_client_response_error(status: int) -> ClientResponseError:
+    """Create a ClientResponseError with the given status."""
+    return ClientResponseError(
+        request_info=RequestInfo(
+            url=URL("https://example.com/token"),
+            method="POST",
+            headers={},
+            real_url=URL("https://example.com/token"),
+        ),
+        history=(),
+        status=status,
+        message="error",
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_exception"),
+    [
+        (400, OAuth2TokenRequestReauthError),
+        (401, OAuth2TokenRequestReauthError),
+        (403, OAuth2TokenRequestReauthError),
+        (429, OAuth2TokenRequestTransientError),
+        (500, OAuth2TokenRequestTransientError),
+        (503, OAuth2TokenRequestTransientError),
+        (302, OAuth2TokenRequestError),
+    ],
+)
+async def test_refresh_token_error(
+    hass: HomeAssistant,
+    status: int,
+    expected_exception: type[OAuth2TokenRequestError],
+) -> None:
+    """Test a failing token request reports the service, not the cloud domain."""
+    hass.data[DATA_CLOUD] = None
+    impl = account_link.CloudOAuth2Implementation(hass, "test")
+
+    with (
+        patch(
+            "hass_nabucasa.account_link.async_fetch_access_token",
+            side_effect=_mock_client_response_error(status),
+        ),
+        pytest.raises(expected_exception) as exc_info,
+    ):
+        await impl.async_refresh_token(
+            {"refresh_token": "mock-refresh", "access_token": "mock-access"}
+        )
+
+    assert exc_info.value.status == status
+    assert exc_info.value.domain == "test"
+
+
+async def test_refresh_token_connection_error(hass: HomeAssistant) -> None:
+    """Test a failure without a response reports the service, not the cloud domain."""
+    hass.data[DATA_CLOUD] = None
+    impl = account_link.CloudOAuth2Implementation(hass, "test")
+
+    with (
+        patch(
+            "hass_nabucasa.account_link.async_fetch_access_token",
+            side_effect=ClientError("Cannot connect"),
+        ),
+        pytest.raises(OAuth2TokenRequestConnectionError) as exc_info,
+    ):
+        await impl.async_refresh_token(
+            {"refresh_token": "mock-refresh", "access_token": "mock-access"}
+        )
+
+    assert impl.domain == "cloud"
+    assert exc_info.value.domain == "test"
+    assert exc_info.value.translation_placeholders == {"domain": "test"}

@@ -1,54 +1,44 @@
 """Test Subaru sensors."""
+
+import copy
+from typing import Any
 from unittest.mock import patch
 
-from homeassistant.components.subaru.const import VEHICLE_NAME
+import pytest
+
+from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
+from homeassistant.components.subaru.const import DOMAIN, VEHICLE_STATUS
 from homeassistant.components.subaru.sensor import (
     API_GEN_2_SENSORS,
     EV_SENSORS,
     SAFETY_SENSORS,
-    SENSOR_FIELD,
-    SENSOR_TYPE,
 )
-from homeassistant.util import slugify
-from homeassistant.util.unit_system import IMPERIAL_SYSTEM
+from homeassistant.const import STATE_UNKNOWN
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 from .api_responses import (
-    EXPECTED_STATE_EV_IMPERIAL,
     EXPECTED_STATE_EV_METRIC,
     EXPECTED_STATE_EV_UNAVAILABLE,
     TEST_VIN_2_EV,
-    VEHICLE_DATA,
     VEHICLE_STATUS_EV,
 )
-
-from tests.components.subaru.conftest import (
+from .conftest import (
     MOCK_API_FETCH,
     MOCK_API_GET_DATA,
     advance_time_to_next_fetch,
+    setup_subaru_config_entry,
 )
 
-VEHICLE_NAME = VEHICLE_DATA[TEST_VIN_2_EV][VEHICLE_NAME]
+from tests.common import MockConfigEntry, get_sensor_display_state
 
 
-async def test_sensors_ev_imperial(hass, ev_entry):
-    """Test sensors supporting imperial units."""
-    hass.config.units = IMPERIAL_SYSTEM
-
-    with patch(MOCK_API_FETCH), patch(
-        MOCK_API_GET_DATA, return_value=VEHICLE_STATUS_EV
-    ):
-        advance_time_to_next_fetch(hass)
-        await hass.async_block_till_done()
-
-    _assert_data(hass, EXPECTED_STATE_EV_IMPERIAL)
-
-
-async def test_sensors_ev_metric(hass, ev_entry):
+async def test_sensors_ev_metric(hass: HomeAssistant, ev_entry) -> None:
     """Test sensors supporting metric units."""
     _assert_data(hass, EXPECTED_STATE_EV_METRIC)
 
 
-async def test_sensors_missing_vin_data(hass, ev_entry):
+async def test_sensors_missing_vin_data(hass: HomeAssistant, ev_entry) -> None:
     """Test for missing VIN dataset."""
     with patch(MOCK_API_FETCH), patch(MOCK_API_GET_DATA, return_value=None):
         advance_time_to_next_fetch(hass)
@@ -57,16 +47,97 @@ async def test_sensors_missing_vin_data(hass, ev_entry):
     _assert_data(hass, EXPECTED_STATE_EV_UNAVAILABLE)
 
 
-def _assert_data(hass, expected_state):
+def _assert_data(hass: HomeAssistant, expected_state: dict[str, Any]) -> None:
     sensor_list = EV_SENSORS
     sensor_list.extend(API_GEN_2_SENSORS)
     sensor_list.extend(SAFETY_SENSORS)
     expected_states = {}
+    entity_registry = er.async_get(hass)
     for item in sensor_list:
-        expected_states[
-            f"sensor.{slugify(f'{VEHICLE_NAME} {item[SENSOR_TYPE]}')}"
-        ] = expected_state[item[SENSOR_FIELD]]
+        # Disabled-by-default sensors (e.g. the *_raw diagnostic companions)
+        # aren't loaded into the state machine, so there's nothing to assert.
+        if not item.entity_registry_enabled_default:
+            continue
+        entity = entity_registry.async_get_entity_id(
+            SENSOR_DOMAIN, DOMAIN, f"{TEST_VIN_2_EV}_{item.key}"
+        )
+        expected_states[entity] = expected_state[item.key]
 
-    for sensor in expected_states:
-        actual = hass.states.get(sensor)
-        assert actual.state == expected_states[sensor]
+    for sensor, value in expected_states.items():
+        state = get_sensor_display_state(hass, entity_registry, sensor)
+        assert state == value
+
+
+@pytest.mark.usefixtures("entity_registry_enabled_by_default", "ev_entry")
+async def test_recommended_tire_pressure_from_vehicle_health(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+) -> None:
+    """Recommended tire pressure sensors derive their value from vehicle_health.
+
+    These sensors are disabled-by-default diagnostics, so they're skipped in
+    `_assert_data`. Enable them here to exercise the `value_fn`-from-
+    `vehicle_health` path (the only consumer of nested-section value_fn in
+    the integration today). Fixture has FRONT_TIRES=35 / REAR_TIRES=33 PSI;
+    the test default unit system is metric, so HA's pressure conversion
+    surfaces them as kPa.
+    """
+    front = entity_registry.async_get_entity_id(
+        SENSOR_DOMAIN, DOMAIN, f"{TEST_VIN_2_EV}_recommended_tire_pressure_front"
+    )
+    assert front is not None
+    assert (
+        get_sensor_display_state(hass, entity_registry, front)
+        == EXPECTED_STATE_EV_METRIC["recommended_tire_pressure_front"]
+    )
+
+    rear = entity_registry.async_get_entity_id(
+        SENSOR_DOMAIN, DOMAIN, f"{TEST_VIN_2_EV}_recommended_tire_pressure_rear"
+    )
+    assert rear is not None
+    assert (
+        get_sensor_display_state(hass, entity_registry, rear)
+        == EXPECTED_STATE_EV_METRIC["recommended_tire_pressure_rear"]
+    )
+
+
+async def test_avg_fuel_consumption_zero_metric(
+    hass: HomeAssistant,
+    subaru_config_entry: MockConfigEntry,
+) -> None:
+    """AVG_FUEL_CONSUMPTION of 0 returns 0 verbatim instead of dividing by zero.
+
+    Guards the metric conversion at sensor.py:`native_value` so that a fresh
+    vehicle reporting 0 mpg doesn't raise ZeroDivisionError on metric installs.
+    """
+    status_with_zero = copy.deepcopy(VEHICLE_STATUS_EV)
+    status_with_zero[VEHICLE_STATUS]["AVG_FUEL_CONSUMPTION"] = 0
+
+    await setup_subaru_config_entry(
+        hass, subaru_config_entry, vehicle_status=status_with_zero
+    )
+
+    state = hass.states.get("sensor.test_vehicle_2_average_fuel_consumption")
+    assert state is not None
+    assert state.state == "0"
+
+
+async def test_enum_unmapped_value_reports_unknown(
+    hass: HomeAssistant,
+    subaru_config_entry: MockConfigEntry,
+) -> None:
+    """Unmapped ENUM values report as `unknown`.
+
+    Live API values not in `VEHICLE_STATE_OPTIONS` fall through to `unknown`
+    rather than surfacing the raw upstream string as the entity state.
+    """
+    status_with_unmapped_value = copy.deepcopy(VEHICLE_STATUS_EV)
+    status_with_unmapped_value[VEHICLE_STATUS]["VEHICLE_STATE_TYPE"] = "ENGINE_RUNNING"
+
+    await setup_subaru_config_entry(
+        hass, subaru_config_entry, vehicle_status=status_with_unmapped_value
+    )
+
+    enum_state = hass.states.get("sensor.test_vehicle_2_vehicle_state")
+    assert enum_state is not None
+    assert enum_state.state == STATE_UNKNOWN

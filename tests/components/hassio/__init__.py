@@ -1,2 +1,3 @@
-"""Tests for Hass.io component."""
-HASSIO_TOKEN = "123456"
+"""Compatibility imports for the Home Assistant pytest helpers."""
+
+from pytest_homeassistant.components.hassio import SUPERVISOR_TOKEN as SUPERVISOR_TOKEN

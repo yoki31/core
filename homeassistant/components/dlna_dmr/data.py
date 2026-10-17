@@ -1,18 +1,19 @@
 """Data used by this integration."""
-from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from typing import NamedTuple, cast
+from typing import NamedTuple
 
-from async_upnp_client import UpnpEventHandler, UpnpFactory, UpnpRequester
 from async_upnp_client.aiohttp import AiohttpNotifyServer, AiohttpSessionRequester
+from async_upnp_client.client import UpnpRequester
+from async_upnp_client.client_factory import UpnpFactory
+from async_upnp_client.event_handler import UpnpEventHandler
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant
 from homeassistant.helpers import aiohttp_client
 
-from .const import DOMAIN, LOGGER
+from .const import DOMAIN_DATA, LOGGER
 
 
 class EventListenAddr(NamedTuple):
@@ -46,7 +47,9 @@ class DlnaDmrData:
         """Clean up resources when Home Assistant is stopped."""
         LOGGER.debug("Cleaning resources in DlnaDmrData")
         async with self.lock:
-            tasks = (server.stop_server() for server in self.event_notifiers.values())
+            tasks = (
+                server.async_stop_server() for server in self.event_notifiers.values()
+            )
             asyncio.gather(*tasks)
             self.event_notifiers = {}
             self.event_notifier_refs = defaultdict(int)
@@ -76,14 +79,14 @@ class DlnaDmrData:
                 return self.event_notifiers[listen_addr].event_handler
 
             # Start event handler
+            source = (listen_addr.host or "0.0.0.0", listen_addr.port)
             server = AiohttpNotifyServer(
                 requester=self.requester,
-                listen_port=listen_addr.port,
-                listen_host=listen_addr.host,
+                source=source,
                 callback_url=listen_addr.callback_url,
                 loop=hass.loop,
             )
-            await server.start_server()
+            await server.async_start_server()
             LOGGER.debug("Started event handler at %s", server.callback_url)
 
             self.event_notifiers[listen_addr] = server
@@ -103,7 +106,7 @@ class DlnaDmrData:
             # Shutdown the server when it has no more users
             if self.event_notifier_refs[listen_addr] == 0:
                 server = self.event_notifiers.pop(listen_addr)
-                await server.stop_server()
+                await server.async_stop_server()
 
             # Remove the cleanup listener when there's nothing left to cleanup
             if not self.event_notifiers:
@@ -113,10 +116,15 @@ class DlnaDmrData:
 
 
 def get_domain_data(hass: HomeAssistant) -> DlnaDmrData:
-    """Obtain this integration's domain data, creating it if needed."""
-    if DOMAIN in hass.data:
-        return cast(DlnaDmrData, hass.data[DOMAIN])
+    """Obtain this integration's domain data, creating it if needed.
 
-    data = DlnaDmrData(hass)
-    hass.data[DOMAIN] = data
+    Creation is deferred to the first caller rather than done at setup, to
+    avoid building DlnaDmrData and its dependencies until a device is
+    actually connected to. This module is imported to run the config flow
+    for any DMR device discovered on the network, including ignored ones.
+    """
+    if (data := hass.data.get(DOMAIN_DATA)) is not None:
+        return data
+
+    data = hass.data[DOMAIN_DATA] = DlnaDmrData(hass)
     return data

@@ -1,10 +1,12 @@
 {
   "domain": "ialarm",
   "name": "Antifurto365 iAlarm",
-  "documentation": "https://www.home-assistant.io/integrations/ialarm",
-  "requirements": ["pyialarm==1.9.0"],
+  "categories": ["security_safety.alarm_systems"],
   "codeowners": ["@RyuzakiKK"],
   "config_flow": true,
+  "documentation": "https://www.home-assistant.io/integrations/ialarm",
+  "integration_type": "device",
   "iot_class": "local_polling",
-  "loggers": ["pyialarm"]
+  "loggers": ["pyialarm"],
+  "requirements": ["pyialarm==2.2.0"]
 }

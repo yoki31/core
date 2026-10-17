@@ -1,9 +1,17 @@
 {
   "domain": "aladdin_connect",
   "name": "Aladdin Connect",
+  "categories": ["blinds_curtains"],
+  "codeowners": ["@swcloudgenie"],
+  "config_flow": true,
+  "dependencies": ["application_credentials"],
+  "dhcp": [
+    {
+      "hostname": "gdocntl-*"
+    }
+  ],
   "documentation": "https://www.home-assistant.io/integrations/aladdin_connect",
-  "requirements": ["aladdin_connect==0.4"],
-  "codeowners": [],
+  "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "loggers": ["aladdin_connect"]
+  "requirements": ["genie-partner-sdk==1.0.11"]
 }

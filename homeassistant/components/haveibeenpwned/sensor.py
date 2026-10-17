@@ -1,27 +1,26 @@
 """Support for haveibeenpwned (email breaches) sensor."""
-from __future__ import annotations
 
 from datetime import timedelta
 from http import HTTPStatus
 import logging
+from typing import TYPE_CHECKING, Any, override
 
-from aiohttp.hdrs import USER_AGENT
+import probatio
 import requests
-import voluptuous as vol
 
-from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
-from homeassistant.const import ATTR_ATTRIBUTION, CONF_API_KEY, CONF_EMAIL
+from homeassistant.components.sensor import (
+    PLATFORM_SCHEMA as SENSOR_PLATFORM_SCHEMA,
+    SensorEntity,
+)
+from homeassistant.const import CONF_API_KEY, CONF_EMAIL
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import track_point_in_time
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from homeassistant.util import Throttle
-import homeassistant.util.dt as dt_util
+from homeassistant.util import Throttle, dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
-
-ATTRIBUTION = "Data provided by Have I Been Pwned (HIBP)"
 
 DATE_STR_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -32,10 +31,10 @@ MIN_TIME_BETWEEN_UPDATES = timedelta(minutes=15)
 
 URL = "https://haveibeenpwned.com/api/v3/breachedaccount/"
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+PLATFORM_SCHEMA = SENSOR_PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_EMAIL): vol.All(cv.ensure_list, [cv.string]),
-        vol.Required(CONF_API_KEY): cv.string,
+        probatio.Required(CONF_EMAIL): probatio.All(probatio.EnsureList(), [cv.string]),
+        probatio.Required(probatio.Secret(CONF_API_KEY)): cv.string,
     }
 )
 
@@ -51,56 +50,42 @@ def setup_platform(
     api_key = config[CONF_API_KEY]
     data = HaveIBeenPwnedData(emails, api_key)
 
-    devices = []
-    for email in emails:
-        devices.append(HaveIBeenPwnedSensor(data, email))
-
-    add_entities(devices)
+    add_entities(HaveIBeenPwnedSensor(data, email) for email in emails)
 
 
 class HaveIBeenPwnedSensor(SensorEntity):
     """Implementation of a HaveIBeenPwned sensor."""
 
-    def __init__(self, data, email):
+    _attr_attribution = "Data provided by Have I Been Pwned (HIBP)"
+
+    def __init__(self, data: HaveIBeenPwnedData, email: str) -> None:
         """Initialize the HaveIBeenPwned sensor."""
-        self._state = None
         self._data = data
         self._email = email
-        self._unit_of_measurement = "Breaches"
+        self._attr_name = f"Breaches {email}"
+        self._attr_native_unit_of_measurement = "Breaches"
 
     @property
-    def name(self):
-        """Return the name of the sensor."""
-        return f"Breaches {self._email}"
-
-    @property
-    def native_unit_of_measurement(self):
-        """Return the unit the value is expressed in."""
-        return self._unit_of_measurement
-
-    @property
-    def native_value(self):
-        """Return the state of the device."""
-        return self._state
-
-    @property
-    def extra_state_attributes(self):
+    @override
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return the attributes of the sensor."""
-        val = {ATTR_ATTRIBUTION: ATTRIBUTION}
+        val: dict[str, Any] = {}
         if self._email not in self._data.data:
             return val
 
         for idx, value in enumerate(self._data.data[self._email]):
             tmpname = f"breach {idx + 1}"
-            datetime_local = dt_util.as_local(
-                dt_util.parse_datetime(value["AddedDate"])
-            )
+            parsed_datetime = dt_util.parse_datetime(value["AddedDate"])
+            if TYPE_CHECKING:
+                assert parsed_datetime is not None
+            datetime_local = dt_util.as_local(parsed_datetime)
             tmpvalue = f"{value['Title']} {datetime_local.strftime(DATE_STR_FORMAT)}"
             val[tmpname] = tmpvalue
 
         return val
 
-    async def async_added_to_hass(self):
+    @override
+    async def async_added_to_hass(self) -> None:
         """Get initial data."""
         # To make sure we get initial data for the sensors ignoring the normal
         # throttle of 15 minutes but using an update throttle of 5 seconds
@@ -123,15 +108,15 @@ class HaveIBeenPwnedSensor(SensorEntity):
             )
             return
 
-        self._state = len(self._data.data[self._email])
+        self._attr_native_value = len(self._data.data[self._email])
         self.schedule_update_ha_state()
 
-    def update(self):
+    def update(self) -> None:
         """Update data and see if it contains data for our email."""
         self._data.update()
 
         if self._email in self._data.data:
-            self._state = len(self._data.data[self._email])
+            self._attr_native_value = len(self._data.data[self._email])
 
 
 class HaveIBeenPwnedData:
@@ -160,7 +145,7 @@ class HaveIBeenPwnedData:
         """Get the latest data for current email from REST service."""
         try:
             url = f"{URL}{self._email}?truncateResponse=false"
-            header = {USER_AGENT: HA_USER_AGENT, "hibp-api-key": self._api_key}
+            header = {"User-Agent": HA_USER_AGENT, "hibp-api-key": self._api_key}
             _LOGGER.debug("Checking for breaches for email: %s", self._email)
             req = requests.get(url, headers=header, allow_redirects=True, timeout=5)
 

@@ -1,14 +1,12 @@
 {
   "domain": "opengarage",
   "name": "OpenGarage",
-  "documentation": "https://www.home-assistant.io/integrations/opengarage",
-  "codeowners": [
-    "@danielhiversen"
-  ],
-  "requirements": [
-    "open-garage==0.2.0"
-  ],
-  "iot_class": "local_polling",
+  "categories": ["blinds_curtains"],
+  "codeowners": ["@danielhiversen"],
   "config_flow": true,
-  "loggers": ["opengarage"]
+  "documentation": "https://www.home-assistant.io/integrations/opengarage",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "loggers": ["opengarage"],
+  "requirements": ["open-garage==0.3.1"]
 }

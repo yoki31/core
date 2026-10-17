@@ -1,10 +1,12 @@
 {
   "domain": "flo",
   "name": "Flo",
+  "categories": ["water.meters_leak_detection"],
+  "codeowners": ["@dmulcahey"],
   "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/flo",
-  "requirements": ["aioflo==2021.11.0"],
-  "codeowners": ["@dmulcahey"],
+  "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "loggers": ["aioflo"]
+  "loggers": ["aioflo"],
+  "requirements": ["aioflo==2026.9.4"]
 }

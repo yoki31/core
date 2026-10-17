@@ -1,46 +1,29 @@
 """Support for interfacing with Monoprice 6 zone home audio controller."""
-import logging
 
-from serial import SerialException
+import logging
+from typing import override
+
+from serialx import SerialException
 
 from homeassistant import core
-from homeassistant.components.media_player import MediaPlayerEntity
-from homeassistant.components.media_player.const import (
-    SUPPORT_SELECT_SOURCE,
-    SUPPORT_TURN_OFF,
-    SUPPORT_TURN_ON,
-    SUPPORT_VOLUME_MUTE,
-    SUPPORT_VOLUME_SET,
-    SUPPORT_VOLUME_STEP,
+from homeassistant.components.media_player import (
+    MediaPlayerDeviceClass,
+    MediaPlayerEntity,
+    MediaPlayerEntityFeature,
+    MediaPlayerState,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_PORT, STATE_OFF, STATE_ON
+from homeassistant.const import CONF_PORT
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv, entity_platform, service
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import (
-    CONF_SOURCES,
-    DOMAIN,
-    FIRST_RUN,
-    MONOPRICE_OBJECT,
-    SERVICE_RESTORE,
-    SERVICE_SNAPSHOT,
-)
+from . import MonopriceConfigEntry
+from .const import CONF_SOURCES, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+MAX_VOLUME = 38
 PARALLEL_UPDATES = 1
-
-SUPPORT_MONOPRICE = (
-    SUPPORT_VOLUME_MUTE
-    | SUPPORT_VOLUME_SET
-    | SUPPORT_VOLUME_STEP
-    | SUPPORT_TURN_ON
-    | SUPPORT_TURN_OFF
-    | SUPPORT_SELECT_SOURCE
-)
 
 
 @core.callback
@@ -67,13 +50,13 @@ def _get_sources(config_entry):
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    config_entry: MonopriceConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Monoprice 6-zone amplifier platform."""
     port = config_entry.data[CONF_PORT]
 
-    monoprice = hass.data[DOMAIN][config_entry.entry_id][MONOPRICE_OBJECT]
+    monoprice = config_entry.runtime_data.client
 
     sources = _get_sources(config_entry)
 
@@ -81,51 +64,30 @@ async def async_setup_entry(
     for i in range(1, 4):
         for j in range(1, 7):
             zone_id = (i * 10) + j
-            _LOGGER.info("Adding zone %d for port %s", zone_id, port)
+            _LOGGER.debug("Adding zone %d for port %s", zone_id, port)
             entities.append(
                 MonopriceZone(monoprice, sources, config_entry.entry_id, zone_id)
             )
 
     # only call update before add if it's the first run so we can try to detect zones
-    first_run = hass.data[DOMAIN][config_entry.entry_id][FIRST_RUN]
-    async_add_entities(entities, first_run)
-
-    platform = entity_platform.async_get_current_platform()
-
-    def _call_service(entities, service_call):
-        for entity in entities:
-            if service_call.service == SERVICE_SNAPSHOT:
-                entity.snapshot()
-            elif service_call.service == SERVICE_RESTORE:
-                entity.restore()
-
-    @service.verify_domain_control(hass, DOMAIN)
-    async def async_service_handle(service_call: core.ServiceCall) -> None:
-        """Handle for services."""
-        entities = await platform.async_extract_from_service(service_call)
-
-        if not entities:
-            return
-
-        hass.async_add_executor_job(_call_service, entities, service_call)
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SNAPSHOT,
-        async_service_handle,
-        schema=cv.make_entity_service_schema({}),
-    )
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_RESTORE,
-        async_service_handle,
-        schema=cv.make_entity_service_schema({}),
-    )
+    async_add_entities(entities, config_entry.runtime_data.first_run)
 
 
 class MonopriceZone(MediaPlayerEntity):
     """Representation of a Monoprice amplifier zone."""
+
+    _attr_device_class = MediaPlayerDeviceClass.RECEIVER
+    _attr_supported_features = (
+        MediaPlayerEntityFeature.VOLUME_MUTE
+        | MediaPlayerEntityFeature.VOLUME_SET
+        | MediaPlayerEntityFeature.VOLUME_STEP
+        | MediaPlayerEntityFeature.TURN_ON
+        | MediaPlayerEntityFeature.TURN_OFF
+        | MediaPlayerEntityFeature.SELECT_SOURCE
+    )
+    _attr_has_entity_name = True
+    _attr_name = None
+    _attr_volume_step = 1 / MAX_VOLUME
 
     def __init__(self, monoprice, sources, namespace, zone_id):
         """Initialize new zone."""
@@ -135,19 +97,20 @@ class MonopriceZone(MediaPlayerEntity):
         # dict source name -> source_id
         self._source_name_id = sources[1]
         # ordered list of all source names
-        self._source_names = sources[2]
+        self._attr_source_list = sources[2]
         self._zone_id = zone_id
-        self._unique_id = f"{namespace}_{self._zone_id}"
-        self._name = f"Zone {self._zone_id}"
+        self._attr_unique_id = f"{namespace}_{self._zone_id}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, self._attr_unique_id)},
+            manufacturer="Monoprice",
+            model="6-Zone Amplifier",
+            name=f"Zone {self._zone_id}",
+        )
 
         self._snapshot = None
-        self._state = None
-        self._volume = None
-        self._source = None
-        self._mute = None
         self._update_success = True
 
-    def update(self):
+    def update(self) -> None:
         """Retrieve latest state."""
         try:
             state = self._monoprice.zone_status(self._zone_id)
@@ -160,76 +123,23 @@ class MonopriceZone(MediaPlayerEntity):
             self._update_success = False
             return
 
-        self._state = STATE_ON if state.power else STATE_OFF
-        self._volume = state.volume
-        self._mute = state.mute
+        self._attr_state = MediaPlayerState.ON if state.power else MediaPlayerState.OFF
+        self._attr_volume_level = state.volume / MAX_VOLUME
+        self._attr_is_volume_muted = state.mute
         idx = state.source
-        if idx in self._source_id_name:
-            self._source = self._source_id_name[idx]
-        else:
-            self._source = None
+        self._attr_source = self._source_id_name.get(idx)
 
     @property
-    def entity_registry_enabled_default(self):
-        """Return if the entity should be enabled when first added to the entity registry."""
+    @override
+    def entity_registry_enabled_default(self) -> bool:
+        """Return if the entity should be enabled when first added."""
         return self._zone_id < 20 or self._update_success
 
     @property
-    def device_info(self) -> DeviceInfo:
-        """Return device info for this device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.unique_id)},
-            manufacturer="Monoprice",
-            model="6-Zone Amplifier",
-            name=self.name,
-        )
-
-    @property
-    def unique_id(self):
-        """Return unique ID for this device."""
-        return self._unique_id
-
-    @property
-    def name(self):
-        """Return the name of the zone."""
-        return self._name
-
-    @property
-    def state(self):
-        """Return the state of the zone."""
-        return self._state
-
-    @property
-    def volume_level(self):
-        """Volume level of the media player (0..1)."""
-        if self._volume is None:
-            return None
-        return self._volume / 38.0
-
-    @property
-    def is_volume_muted(self):
-        """Boolean if volume is currently muted."""
-        return self._mute
-
-    @property
-    def supported_features(self):
-        """Return flag of media commands that are supported."""
-        return SUPPORT_MONOPRICE
-
-    @property
+    @override
     def media_title(self):
         """Return the current source as medial title."""
-        return self._source
-
-    @property
-    def source(self):
-        """Return the current input source of the device."""
-        return self._source
-
-    @property
-    def source_list(self):
-        """List of available input sources."""
-        return self._source_names
+        return self.source
 
     def snapshot(self):
         """Save zone's current state."""
@@ -239,39 +149,31 @@ class MonopriceZone(MediaPlayerEntity):
         """Restore saved state."""
         if self._snapshot:
             self._monoprice.restore_zone(self._snapshot)
-            self.schedule_update_ha_state(True)
 
-    def select_source(self, source):
+    @override
+    def select_source(self, source: str) -> None:
         """Set input source."""
         if source not in self._source_name_id:
             return
         idx = self._source_name_id[source]
         self._monoprice.set_source(self._zone_id, idx)
 
-    def turn_on(self):
+    @override
+    def turn_on(self) -> None:
         """Turn the media player on."""
         self._monoprice.set_power(self._zone_id, True)
 
-    def turn_off(self):
+    @override
+    def turn_off(self) -> None:
         """Turn the media player off."""
         self._monoprice.set_power(self._zone_id, False)
 
-    def mute_volume(self, mute):
+    @override
+    def mute_volume(self, mute: bool) -> None:
         """Mute (true) or unmute (false) media player."""
         self._monoprice.set_mute(self._zone_id, mute)
 
-    def set_volume_level(self, volume):
+    @override
+    def set_volume_level(self, volume: float) -> None:
         """Set volume level, range 0..1."""
-        self._monoprice.set_volume(self._zone_id, int(volume * 38))
-
-    def volume_up(self):
-        """Volume up the media player."""
-        if self._volume is None:
-            return
-        self._monoprice.set_volume(self._zone_id, min(self._volume + 1, 38))
-
-    def volume_down(self):
-        """Volume down media player."""
-        if self._volume is None:
-            return
-        self._monoprice.set_volume(self._zone_id, max(self._volume - 1, 0))
+        self._monoprice.set_volume(self._zone_id, round(volume * MAX_VOLUME))

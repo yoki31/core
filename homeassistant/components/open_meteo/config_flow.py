@@ -1,14 +1,15 @@
 """Config flow to configure the Open-Meteo integration."""
-from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
-import voluptuous as vol
+from open_meteo import HourlyParameters, OpenMeteo, OpenMeteoError
+import probatio
 
-from homeassistant.components.zone import DOMAIN as ZONE_DOMAIN, ENTITY_ID_HOME
-from homeassistant.config_entries import ConfigFlow
-from homeassistant.const import CONF_ZONE
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.components.zone import DOMAIN as ZONE_DOMAIN
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.const import CONF_ZONE, EntityStateAttribute
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import EntitySelector, EntitySelectorConfig
 
 from .const import DOMAIN
 
@@ -17,37 +18,43 @@ class OpenMeteoFlowHandler(ConfigFlow, domain=DOMAIN):
     """Config flow for OpenMeteo."""
 
     VERSION = 1
+    MINOR_VERSION = 2
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle a flow initialized by the user."""
-        zones: dict[str, str] = {
-            entity_id: state.name
-            for entity_id in self.hass.states.async_entity_ids(ZONE_DOMAIN)
-            if (state := self.hass.states.get(entity_id)) is not None
-        }
-
+        errors: dict[str, str] = {}
         if user_input is not None:
-            await self.async_set_unique_id(user_input[CONF_ZONE])
-            self._abort_if_unique_id_configured()
-            return self.async_create_entry(
-                title=zones[user_input[CONF_ZONE]],
-                data={CONF_ZONE: user_input[CONF_ZONE]},
-            )
+            self._async_abort_entries_match({CONF_ZONE: user_input[CONF_ZONE]})
 
-        zones = dict(sorted(zones.items(), key=lambda x: x[1], reverse=True))
+            if (zone := self.hass.states.get(user_input[CONF_ZONE])) is None:
+                errors[CONF_ZONE] = "zone_not_found"
+            else:
+                open_meteo = OpenMeteo(session=async_get_clientsession(self.hass))
+                try:
+                    await open_meteo.forecast(
+                        latitude=zone.attributes[EntityStateAttribute.LATITUDE],
+                        longitude=zone.attributes[EntityStateAttribute.LONGITUDE],
+                        current=[HourlyParameters.TEMPERATURE_2M],
+                    )
+                except OpenMeteoError:
+                    errors["base"] = "cannot_connect"
+                else:
+                    return self.async_create_entry(
+                        title=zone.name,
+                        data={CONF_ZONE: user_input[CONF_ZONE]},
+                    )
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_ZONE): vol.In(
-                        {
-                            ENTITY_ID_HOME: zones.pop(ENTITY_ID_HOME),
-                            **zones,
-                        }
+                    probatio.Required(CONF_ZONE): EntitySelector(
+                        EntitySelectorConfig(domain=ZONE_DOMAIN),
                     ),
                 }
             ),
+            errors=errors,
         )

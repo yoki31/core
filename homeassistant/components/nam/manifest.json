@@ -1,21 +1,24 @@
 {
   "domain": "nam",
   "name": "Nettigo Air Monitor",
-  "documentation": "https://www.home-assistant.io/integrations/nam",
+  "categories": ["sensors.air_quality"],
   "codeowners": ["@bieniu"],
-  "requirements": ["nettigo-air-monitor==1.2.1"],
+  "config_flow": true,
+  "documentation": "https://www.home-assistant.io/integrations/nam",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "loggers": ["nettigo_air_monitor"],
+  "requirements": ["nettigo-air-monitor==5.1.0"],
   "zeroconf": [
     {
-      "type": "_http._tcp.local.",
-      "name": "nam-*"
+      "name": "nam-*",
+      "type": "_http._tcp.local."
     },
     {
-      "type": "_http._tcp.local.",
-      "properties": {"manufacturer": "nettigo"}
+      "properties": {
+        "manufacturer": "nettigo"
+      },
+      "type": "_http._tcp.local."
     }
-  ],
-  "config_flow": true,
-  "quality_scale": "platinum",
-  "iot_class": "local_polling",
-  "loggers": ["nettigo_air_monitor"]
+  ]
 }

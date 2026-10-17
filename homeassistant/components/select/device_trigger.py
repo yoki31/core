@@ -1,15 +1,11 @@
 """Provides device triggers for Select."""
-from __future__ import annotations
 
-from typing import Any
+import probatio
 
-import voluptuous as vol
-
-from homeassistant.components.automation import (
-    AutomationActionType,
-    AutomationTriggerInfo,
+from homeassistant.components.device_automation import (
+    DEVICE_TRIGGER_BASE_SCHEMA,
+    async_get_entity_registry_entry_or_raise,
 )
-from homeassistant.components.device_automation import DEVICE_TRIGGER_BASE_SCHEMA
 from homeassistant.components.homeassistant.triggers.state import (
     CONF_FOR,
     CONF_FROM,
@@ -26,39 +22,40 @@ from homeassistant.const import (
 )
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv, entity_registry
+from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.entity import get_capability
+from homeassistant.helpers.trigger import TriggerActionType, TriggerInfo
 from homeassistant.helpers.typing import ConfigType
 
-from .const import ATTR_OPTIONS, DOMAIN
+from .const import DOMAIN, SelectEntityCapabilityAttribute
 
 TRIGGER_TYPES = {"current_option_changed"}
 
 TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_ENTITY_ID): cv.entity_id,
-        vol.Required(CONF_TYPE): vol.In(TRIGGER_TYPES),
-        vol.Optional(CONF_TO): vol.Any(vol.Coerce(str)),
-        vol.Optional(CONF_FROM): vol.Any(vol.Coerce(str)),
-        vol.Optional(CONF_FOR): cv.positive_time_period_dict,
+        probatio.Required(CONF_ENTITY_ID): cv.entity_id_or_uuid,
+        probatio.Required(CONF_TYPE): probatio.In(TRIGGER_TYPES),
+        probatio.Optional(CONF_TO): probatio.Any(probatio.Coerce(str)),
+        probatio.Optional(CONF_FROM): probatio.Any(probatio.Coerce(str)),
+        probatio.Optional(CONF_FOR): cv.positive_time_period_dict,
     }
 )
 
 
 async def async_get_triggers(
     hass: HomeAssistant, device_id: str
-) -> list[dict[str, Any]]:
+) -> list[dict[str, str]]:
     """List device triggers for Select devices."""
-    registry = await entity_registry.async_get_registry(hass)
+    registry = er.async_get(hass)
     return [
         {
             CONF_PLATFORM: "device",
             CONF_DEVICE_ID: device_id,
             CONF_DOMAIN: DOMAIN,
-            CONF_ENTITY_ID: entry.entity_id,
+            CONF_ENTITY_ID: entry.id,
             CONF_TYPE: "current_option_changed",
         }
-        for entry in entity_registry.async_entries_for_device(registry, device_id)
+        for entry in er.async_entries_for_device(registry, device_id)
         if entry.domain == DOMAIN
     ]
 
@@ -66,8 +63,8 @@ async def async_get_triggers(
 async def async_attach_trigger(
     hass: HomeAssistant,
     config: ConfigType,
-    action: AutomationActionType,
-    automation_info: AutomationTriggerInfo,
+    action: TriggerActionType,
+    trigger_info: TriggerInfo,
 ) -> CALLBACK_TYPE:
     """Attach a trigger."""
     state_config = {
@@ -86,25 +83,32 @@ async def async_attach_trigger(
 
     state_config = await async_validate_state_trigger_config(hass, state_config)
     return await async_attach_state_trigger(
-        hass, state_config, action, automation_info, platform_type="device"
+        hass, state_config, action, trigger_info, platform_type="device"
     )
 
 
 async def async_get_trigger_capabilities(
     hass: HomeAssistant, config: ConfigType
-) -> dict[str, vol.Schema]:
+) -> dict[str, probatio.Schema]:
     """List trigger capabilities."""
+
     try:
-        options = get_capability(hass, config[CONF_ENTITY_ID], ATTR_OPTIONS) or []
+        entry = async_get_entity_registry_entry_or_raise(hass, config[CONF_ENTITY_ID])
+        options = (
+            get_capability(
+                hass, entry.entity_id, SelectEntityCapabilityAttribute.OPTIONS
+            )
+            or []
+        )
     except HomeAssistantError:
         options = []
 
     return {
-        "extra_fields": vol.Schema(
+        "extra_fields": probatio.Schema(
             {
-                vol.Optional(CONF_FROM): vol.In(options),
-                vol.Optional(CONF_TO): vol.In(options),
-                vol.Optional(CONF_FOR): cv.positive_time_period_dict,
+                probatio.Optional(CONF_FROM): probatio.In(options),
+                probatio.Optional(CONF_TO): probatio.In(options),
+                probatio.Optional(CONF_FOR): cv.positive_time_period_dict,
             }
         )
     }

@@ -1,28 +1,32 @@
 """Support for Tasmota covers."""
-from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
 from hatasmota import const as tasmota_const, shutter as tasmota_shutter
 from hatasmota.entity import TasmotaEntity as HATasmotaEntity
 from hatasmota.models import DiscoveryHashType
 
-from homeassistant.components import cover
-from homeassistant.components.cover import CoverEntity
+from homeassistant.components.cover import (
+    ATTR_POSITION,
+    ATTR_TILT_POSITION,
+    DOMAIN as COVER_DOMAIN,
+    CoverEntity,
+    CoverEntityFeature,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import DATA_REMOVE_DISCOVER_COMPONENT
 from .discovery import TASMOTA_DISCOVERY_ENTITY_NEW
-from .mixins import TasmotaAvailability, TasmotaDiscoveryUpdate
+from .entity import TasmotaAvailability, TasmotaDiscoveryUpdate
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Tasmota cover dynamically through discovery."""
 
@@ -35,12 +39,12 @@ async def async_setup_entry(
             [TasmotaCover(tasmota_entity=tasmota_entity, discovery_hash=discovery_hash)]
         )
 
-    hass.data[
-        DATA_REMOVE_DISCOVER_COMPONENT.format(cover.DOMAIN)
-    ] = async_dispatcher_connect(
-        hass,
-        TASMOTA_DISCOVERY_ENTITY_NEW.format(cover.DOMAIN),
-        async_discover,
+    hass.data[DATA_REMOVE_DISCOVER_COMPONENT.format(COVER_DOMAIN)] = (
+        async_dispatcher_connect(
+            hass,
+            TASMOTA_DISCOVERY_ENTITY_NEW.format(COVER_DOMAIN),
+            async_discover,
+        )
     )
 
 
@@ -57,11 +61,27 @@ class TasmotaCover(
         """Initialize the Tasmota cover."""
         self._direction: int | None = None
         self._position: int | None = None
+        self._tilt_position: int | None = None
 
         super().__init__(
             **kwds,
         )
 
+        self._attr_supported_features = (
+            CoverEntityFeature.OPEN
+            | CoverEntityFeature.CLOSE
+            | CoverEntityFeature.STOP
+            | CoverEntityFeature.SET_POSITION
+        )
+        if self._tasmota_entity.supports_tilt:
+            self._attr_supported_features |= (
+                CoverEntityFeature.OPEN_TILT
+                | CoverEntityFeature.CLOSE_TILT
+                | CoverEntityFeature.STOP_TILT
+                | CoverEntityFeature.SET_TILT_POSITION
+            )
+
+    @override
     async def async_added_to_hass(self) -> None:
         """Subscribe to MQTT events."""
         self._tasmota_entity.set_on_state_callback(self.cover_state_updated)
@@ -72,9 +92,11 @@ class TasmotaCover(
         """Handle state updates."""
         self._direction = kwargs["direction"]
         self._position = kwargs["position"]
+        self._tilt_position = kwargs["tilt"]
         self.async_write_ha_state()
 
     @property
+    @override
     def current_cover_position(self) -> int | None:
         """Return current position of cover.
 
@@ -83,45 +105,72 @@ class TasmotaCover(
         return self._position
 
     @property
-    def supported_features(self) -> int:
-        """Flag supported features."""
-        return (
-            cover.SUPPORT_OPEN
-            | cover.SUPPORT_CLOSE
-            | cover.SUPPORT_STOP
-            | cover.SUPPORT_SET_POSITION
-        )
+    @override
+    def current_cover_tilt_position(self) -> int | None:
+        """Return current tilt position of cover.
+
+        None is unknown, 0 is closed, 100 is fully open.
+        """
+        return self._tilt_position
 
     @property
+    @override
     def is_opening(self) -> bool:
         """Return if the cover is opening or not."""
         return self._direction == tasmota_const.SHUTTER_DIRECTION_UP
 
     @property
+    @override
     def is_closing(self) -> bool:
         """Return if the cover is closing or not."""
         return self._direction == tasmota_const.SHUTTER_DIRECTION_DOWN
 
     @property
+    @override
     def is_closed(self) -> bool | None:
         """Return if the cover is closed or not."""
         if self._position is None:
             return None
         return self._position == 0
 
+    @override
     async def async_open_cover(self, **kwargs: Any) -> None:
         """Open the cover."""
         await self._tasmota_entity.open()
 
+    @override
     async def async_close_cover(self, **kwargs: Any) -> None:
         """Close cover."""
         await self._tasmota_entity.close()
 
+    @override
     async def async_set_cover_position(self, **kwargs: Any) -> None:
         """Move the cover to a specific position."""
-        position = kwargs[cover.ATTR_POSITION]
+        position = kwargs[ATTR_POSITION]
         await self._tasmota_entity.set_position(position)
 
+    @override
     async def async_stop_cover(self, **kwargs: Any) -> None:
         """Stop the cover."""
+        await self._tasmota_entity.stop()
+
+    @override
+    async def async_open_cover_tilt(self, **kwargs: Any) -> None:
+        """Open the cover tilt."""
+        await self._tasmota_entity.open_tilt()
+
+    @override
+    async def async_close_cover_tilt(self, **kwargs: Any) -> None:
+        """Close cover tilt."""
+        await self._tasmota_entity.close_tilt()
+
+    @override
+    async def async_set_cover_tilt_position(self, **kwargs: Any) -> None:
+        """Move the cover tilt to a specific position."""
+        tilt = kwargs[ATTR_TILT_POSITION]
+        await self._tasmota_entity.set_tilt_position(tilt)
+
+    @override
+    async def async_stop_cover_tilt(self, **kwargs: Any) -> None:
+        """Stop the cover tilt."""
         await self._tasmota_entity.stop()

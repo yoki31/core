@@ -1,7 +1,9 @@
 """Connect two Home Assistant instances via MQTT."""
-import json
 
-import voluptuous as vol
+import json
+import logging
+
+import probatio
 
 from homeassistant.components import mqtt
 from homeassistant.components.mqtt import valid_publish_topic, valid_subscribe_topic
@@ -14,13 +16,14 @@ from homeassistant.const import (
     EVENT_HOMEASSISTANT_STARTED,
     EVENT_HOMEASSISTANT_STOP,
     EVENT_STATE_CHANGED,
-    EVENT_TIME_CHANGED,
     MATCH_ALL,
 )
 from homeassistant.core import EventOrigin, HomeAssistant, State, callback
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.json import JSONEncoder
 from homeassistant.helpers.typing import ConfigType
+
+_LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "mqtt_eventstream"
 CONF_PUBLISH_TOPIC = "publish_topic"
@@ -28,20 +31,20 @@ CONF_SUBSCRIBE_TOPIC = "subscribe_topic"
 CONF_PUBLISH_EVENTSTREAM_RECEIVED = "publish_eventstream_received"
 CONF_IGNORE_EVENT = "ignore_event"
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        DOMAIN: vol.Schema(
+        DOMAIN: probatio.Schema(
             {
-                vol.Optional(CONF_PUBLISH_TOPIC): valid_publish_topic,
-                vol.Optional(CONF_SUBSCRIBE_TOPIC): valid_subscribe_topic,
-                vol.Optional(
+                probatio.Optional(CONF_PUBLISH_TOPIC): valid_publish_topic,
+                probatio.Optional(CONF_SUBSCRIBE_TOPIC): valid_subscribe_topic,
+                probatio.Optional(
                     CONF_PUBLISH_EVENTSTREAM_RECEIVED, default=False
                 ): cv.boolean,
-                vol.Optional(CONF_IGNORE_EVENT, default=[]): cv.ensure_list,
+                probatio.Optional(CONF_IGNORE_EVENT, default=[]): probatio.EnsureList(),
             }
         )
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
 
 BLOCKED_EVENTS = [
@@ -55,11 +58,15 @@ BLOCKED_EVENTS = [
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the MQTT eventstream component."""
+    # Make sure MQTT integration is enabled and the client is available
+    if not await mqtt.async_wait_for_mqtt_client(hass):
+        _LOGGER.error("MQTT integration is not available")
+        return False
+
     conf = config.get(DOMAIN, {})
     pub_topic = conf.get(CONF_PUBLISH_TOPIC)
     sub_topic = conf.get(CONF_SUBSCRIBE_TOPIC)
     ignore_event = conf.get(CONF_IGNORE_EVENT)
-    ignore_event.append(EVENT_TIME_CHANGED)
 
     async def _event_publisher(event):
         """Handle events by publishing them on the MQTT queue."""

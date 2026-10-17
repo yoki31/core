@@ -1,95 +1,99 @@
-"""Common test utils for working with recorder."""
-from datetime import timedelta
+"""Compatibility imports for the Home Assistant pytest helpers."""
 
-from sqlalchemy import create_engine
+# ruff: noqa: PLC0414
 
-from homeassistant import core as ha
-from homeassistant.components import recorder
-from homeassistant.core import HomeAssistant
-from homeassistant.util import dt as dt_util
-
-from tests.common import async_fire_time_changed, fire_time_changed
-from tests.components.recorder import models_schema_0
-
-DEFAULT_PURGE_TASKS = 3
-
-
-def wait_recording_done(hass: HomeAssistant) -> None:
-    """Block till recording is done."""
-    hass.block_till_done()
-    trigger_db_commit(hass)
-    hass.block_till_done()
-    hass.data[recorder.DATA_INSTANCE].block_till_done()
-    hass.block_till_done()
-
-
-async def async_wait_recording_done_without_instance(hass: HomeAssistant) -> None:
-    """Block till recording is done."""
-    await hass.loop.run_in_executor(None, wait_recording_done, hass)
-
-
-def trigger_db_commit(hass: HomeAssistant) -> None:
-    """Force the recorder to commit."""
-    for _ in range(recorder.DEFAULT_COMMIT_INTERVAL):
-        # We only commit on time change
-        fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=1))
-
-
-async def async_wait_recording_done(
-    hass: HomeAssistant,
-    instance: recorder.Recorder,
-) -> None:
-    """Async wait until recording is done."""
-    await hass.async_block_till_done()
-    async_trigger_db_commit(hass)
-    await hass.async_block_till_done()
-    await async_recorder_block_till_done(hass, instance)
-    await hass.async_block_till_done()
-
-
-async def async_wait_purge_done(
-    hass: HomeAssistant, instance: recorder.Recorder, max: int = None
-) -> None:
-    """Wait for max number of purge events.
-
-    Because a purge may insert another PurgeTask into
-    the queue after the WaitTask finishes, we need up to
-    a maximum number of WaitTasks that we will put into the
-    queue.
-    """
-    if not max:
-        max = DEFAULT_PURGE_TASKS
-    for _ in range(max + 1):
-        await async_wait_recording_done(hass, instance)
-
-
-@ha.callback
-def async_trigger_db_commit(hass: HomeAssistant) -> None:
-    """Fore the recorder to commit. Async friendly."""
-    for _ in range(recorder.DEFAULT_COMMIT_INTERVAL):
-        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=1))
-
-
-async def async_recorder_block_till_done(
-    hass: HomeAssistant,
-    instance: recorder.Recorder,
-) -> None:
-    """Non blocking version of recorder.block_till_done()."""
-    await hass.async_add_executor_job(instance.block_till_done)
-
-
-def corrupt_db_file(test_db_file):
-    """Corrupt an sqlite3 database file."""
-    with open(test_db_file, "w+") as fhandle:
-        fhandle.seek(200)
-        fhandle.write("I am a corrupt db" * 100)
-
-
-def create_engine_test(*args, **kwargs):
-    """Test version of create_engine that initializes with old schema.
-
-    This simulates an existing db with the old schema.
-    """
-    engine = create_engine(*args, **kwargs)
-    models_schema_0.Base.metadata.create_all(engine)
-    return engine
+from pytest_homeassistant.components.recorder.common import (
+    CREATE_ENGINE_TARGET as CREATE_ENGINE_TARGET,
+    DEFAULT_PURGE_TASKS as DEFAULT_PURGE_TASKS,
+    DEGREE as DEGREE,
+    EVENT_ORIGIN_ORDER as EVENT_ORIGIN_ORDER,
+    Any as Any,
+    BlockRecorderTask as BlockRecorderTask,
+    Event as Event,
+    EventData as EventData,
+    Events as Events,
+    EventTypes as EventTypes,
+    ForceReturnConnectionToPool as ForceReturnConnectionToPool,
+    HomeAssistant as HomeAssistant,
+    Iterable as Iterable,
+    Iterator as Iterator,
+    Literal as Literal,
+    MagicMock as MagicMock,
+    ModuleType as ModuleType,
+    Recorder as Recorder,
+    RecorderRuns as RecorderRuns,
+    RecorderTask as RecorderTask,
+    SensorDeviceClass as SensorDeviceClass,
+    SensorStateClass as SensorStateClass,
+    Session as Session,
+    State as State,
+    StateAttributes as StateAttributes,
+    States as States,
+    StatesMeta as StatesMeta,
+    StatisticsTask as StatisticsTask,
+    UnitOfTemperature as UnitOfTemperature,
+    assert_dict_of_states_equal_without_context as assert_dict_of_states_equal_without_context,
+    assert_dict_of_states_equal_without_context_and_last_changed as assert_dict_of_states_equal_without_context_and_last_changed,
+    assert_events_equal_without_context as assert_events_equal_without_context,
+    assert_multiple_states_equal_without_context as assert_multiple_states_equal_without_context,
+    assert_multiple_states_equal_without_context_and_last_changed as assert_multiple_states_equal_without_context_and_last_changed,
+    assert_states_equal_without_context as assert_states_equal_without_context,
+    assert_states_equal_without_context_and_last_changed as assert_states_equal_without_context_and_last_changed,
+    async_attach_db_engine as async_attach_db_engine,
+    async_block_recorder as async_block_recorder,
+    async_drop_index as async_drop_index,
+    async_record_states as async_record_states,
+    async_recorder_block_till_done as async_recorder_block_till_done,
+    async_trigger_db_commit as async_trigger_db_commit,
+    async_wait_purge_done as async_wait_purge_done,
+    async_wait_recorder as async_wait_recorder,
+    async_wait_recording_done as async_wait_recording_done,
+    asyncio as asyncio,
+    bytes_to_ulid_or_none as bytes_to_ulid_or_none,
+    bytes_to_uuid_hex_or_none as bytes_to_uuid_hex_or_none,
+    cast as cast,
+    contextmanager as contextmanager,
+    convert_pending_events_to_event_types as convert_pending_events_to_event_types,
+    convert_pending_states_to_meta as convert_pending_states_to_meta,
+    core as core,
+    corrupt_db_file as corrupt_db_file,
+    create_engine as create_engine,
+    create_engine_test as create_engine_test,
+    create_engine_test_for_schema_version_postfix as create_engine_test_for_schema_version_postfix,
+    dataclass as dataclass,
+    datetime as datetime,
+    db_event_data_to_native as db_event_data_to_native,
+    db_event_to_native as db_event_to_native,
+    db_schema_0 as db_schema_0,
+    db_state_attributes_to_native as db_state_attributes_to_native,
+    db_state_to_native as db_state_to_native,
+    do_adhoc_statistics as do_adhoc_statistics,
+    dt_util as dt_util,
+    freeze_time as freeze_time,
+    get_instance as get_instance,
+    get_patched_live_version as get_patched_live_version,
+    get_schema_module_path as get_schema_module_path,
+    get_start_time as get_start_time,
+    ha as ha,
+    importlib as importlib,
+    json_loads as json_loads,
+    json_loads_object as json_loads_object,
+    migration as migration,
+    old_db_schema as old_db_schema,
+    partial as partial,
+    patch as patch,
+    pytest as pytest,
+    record_states as record_states,
+    recorder as recorder,
+    recorder_helper as recorder_helper,
+    run_information_with_session as run_information_with_session,
+    sentinel as sentinel,
+    sqlalchemy_event as sqlalchemy_event,
+    statistics as statistics,
+    statistics_during_period as statistics_during_period,
+    sys as sys,
+    time as time,
+    timedelta as timedelta,
+    trigger_db_commit as trigger_db_commit,
+    wait_recording_done as wait_recording_done,
+)

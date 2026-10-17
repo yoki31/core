@@ -1,8 +1,12 @@
 {
   "domain": "dsmr_reader",
   "name": "DSMR Reader",
-  "documentation": "https://www.home-assistant.io/integrations/dsmr_reader",
+  "categories": ["energy.meters_monitoring"],
+  "codeowners": ["@sorted-bits", "@glodenox", "@erwindouna"],
+  "config_flow": true,
   "dependencies": ["mqtt"],
-  "codeowners": ["@depl0y"],
-  "iot_class": "local_push"
+  "documentation": "https://www.home-assistant.io/integrations/dsmr_reader",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "mqtt": ["dsmr/#"]
 }

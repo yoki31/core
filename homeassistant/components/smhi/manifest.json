@@ -1,10 +1,12 @@
 {
   "domain": "smhi",
   "name": "SMHI",
+  "categories": ["weather_alerts.forecasts"],
+  "codeowners": ["@gjohansson-ST"],
   "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/smhi",
-  "requirements": ["smhi-pkg==1.0.15"],
-  "codeowners": ["@gjohansson-ST"],
+  "integration_type": "service",
   "iot_class": "cloud_polling",
-  "loggers": ["smhi"]
+  "loggers": ["pysmhi"],
+  "requirements": ["pysmhi==2.0.0"]
 }

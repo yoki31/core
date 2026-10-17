@@ -1,35 +1,25 @@
 """Bitcoin information service that uses blockchain.com."""
-from __future__ import annotations
 
 from datetime import timedelta
 import logging
 
 from blockchain import exchangerates, statistics
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.sensor import (
-    PLATFORM_SCHEMA,
+    PLATFORM_SCHEMA as SENSOR_PLATFORM_SCHEMA,
     SensorEntity,
     SensorEntityDescription,
 )
-from homeassistant.const import (
-    CONF_CURRENCY,
-    CONF_DISPLAY_OPTIONS,
-    TIME_MINUTES,
-    TIME_SECONDS,
-)
+from homeassistant.const import CONF_CURRENCY, CONF_DISPLAY_OPTIONS, UnitOfTime
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
 
-ATTRIBUTION = "Data provided by blockchain.com"
-
 DEFAULT_CURRENCY = "USD"
-
-ICON = "mdi:currency-btc"
 
 SCAN_INTERVAL = timedelta(minutes=5)
 
@@ -65,7 +55,7 @@ SENSOR_TYPES: tuple[SensorEntityDescription, ...] = (
     SensorEntityDescription(
         key="minutes_between_blocks",
         name="Time between Blocks",
-        native_unit_of_measurement=TIME_MINUTES,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
     ),
     SensorEntityDescription(
         key="number_of_transactions",
@@ -74,7 +64,7 @@ SENSOR_TYPES: tuple[SensorEntityDescription, ...] = (
     SensorEntityDescription(
         key="hash_rate",
         name="Hash rate",
-        native_unit_of_measurement=f"PH/{TIME_SECONDS}",
+        native_unit_of_measurement=f"PH/{UnitOfTime.SECONDS}",
     ),
     SensorEntityDescription(
         key="timestamp",
@@ -135,12 +125,12 @@ SENSOR_TYPES: tuple[SensorEntityDescription, ...] = (
 
 OPTION_KEYS = [desc.key for desc in SENSOR_TYPES]
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+PLATFORM_SCHEMA = SENSOR_PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_DISPLAY_OPTIONS, default=[]): vol.All(
-            cv.ensure_list, [vol.In(OPTION_KEYS)]
+        probatio.Required(CONF_DISPLAY_OPTIONS, default=[]): probatio.All(
+            probatio.EnsureList(), [probatio.In(OPTION_KEYS)]
         ),
-        vol.Optional(CONF_CURRENCY, default=DEFAULT_CURRENCY): cv.string,
+        probatio.Optional(CONF_CURRENCY, default=DEFAULT_CURRENCY): cv.string,
     }
 )
 
@@ -172,16 +162,18 @@ def setup_platform(
 class BitcoinSensor(SensorEntity):
     """Representation of a Bitcoin sensor."""
 
-    _attr_attribution = ATTRIBUTION
-    _attr_icon = ICON
+    _attr_attribution = "Data provided by blockchain.com"
+    _attr_icon = "mdi:currency-btc"
 
-    def __init__(self, data, currency, description: SensorEntityDescription):
+    def __init__(
+        self, data: BitcoinData, currency: str, description: SensorEntityDescription
+    ) -> None:
         """Initialize the sensor."""
         self.entity_description = description
         self.data = data
         self._currency = currency
 
-    def update(self):
+    def update(self) -> None:
         """Get the latest data and updates the states."""
         self.data.update()
         stats = self.data.stats
@@ -196,7 +188,7 @@ class BitcoinSensor(SensorEntity):
         elif sensor_type == "miners_revenue_usd":
             self._attr_native_value = f"{stats.miners_revenue_usd:.0f}"
         elif sensor_type == "btc_mined":
-            self._attr_native_value = str(stats.btc_mined * 0.00000001)
+            self._attr_native_value = str(stats.btc_mined * 1e-8)
         elif sensor_type == "trade_volume_usd":
             self._attr_native_value = f"{stats.trade_volume_usd:.1f}"
         elif sensor_type == "difficulty":
@@ -214,13 +206,13 @@ class BitcoinSensor(SensorEntity):
         elif sensor_type == "blocks_size":
             self._attr_native_value = f"{stats.blocks_size:.1f}"
         elif sensor_type == "total_fees_btc":
-            self._attr_native_value = f"{stats.total_fees_btc * 0.00000001:.2f}"
+            self._attr_native_value = f"{stats.total_fees_btc * 1e-8:.2f}"
         elif sensor_type == "total_btc_sent":
-            self._attr_native_value = f"{stats.total_btc_sent * 0.00000001:.2f}"
+            self._attr_native_value = f"{stats.total_btc_sent * 1e-8:.2f}"
         elif sensor_type == "estimated_btc_sent":
-            self._attr_native_value = f"{stats.estimated_btc_sent * 0.00000001:.2f}"
+            self._attr_native_value = f"{stats.estimated_btc_sent * 1e-8:.2f}"
         elif sensor_type == "total_btc":
-            self._attr_native_value = f"{stats.total_btc * 0.00000001:.2f}"
+            self._attr_native_value = f"{stats.total_btc * 1e-8:.2f}"
         elif sensor_type == "total_blocks":
             self._attr_native_value = f"{stats.total_blocks:.0f}"
         elif sensor_type == "next_retarget":
@@ -228,7 +220,7 @@ class BitcoinSensor(SensorEntity):
         elif sensor_type == "estimated_transaction_volume_usd":
             self._attr_native_value = f"{stats.estimated_transaction_volume_usd:.2f}"
         elif sensor_type == "miners_revenue_btc":
-            self._attr_native_value = f"{stats.miners_revenue_btc * 0.00000001:.1f}"
+            self._attr_native_value = f"{stats.miners_revenue_btc * 1e-8:.1f}"
         elif sensor_type == "market_price_usd":
             self._attr_native_value = f"{stats.market_price_usd:.2f}"
 
@@ -236,12 +228,10 @@ class BitcoinSensor(SensorEntity):
 class BitcoinData:
     """Get the latest data and update the states."""
 
-    def __init__(self):
-        """Initialize the data object."""
-        self.stats = None
-        self.ticker = None
+    stats: statistics.Stats
+    ticker: dict[str, exchangerates.Currency]
 
-    def update(self):
+    def update(self) -> None:
         """Get the latest data from blockchain.com."""
 
         self.stats = statistics.get()

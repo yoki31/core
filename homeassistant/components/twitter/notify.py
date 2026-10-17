@@ -1,23 +1,29 @@
 """Twitter platform for notify component."""
-from datetime import datetime, timedelta
+
+from datetime import timedelta
 from functools import partial
 from http import HTTPStatus
 import json
 import logging
 import mimetypes
 import os
+from typing import Any, override
 
+import probatio
 from TwitterAPI import TwitterAPI
-import voluptuous as vol
 
 from homeassistant.components.notify import (
     ATTR_DATA,
-    PLATFORM_SCHEMA,
+    ATTR_TARGET,
+    PLATFORM_SCHEMA as NOTIFY_PLATFORM_SCHEMA,
     BaseNotificationService,
 )
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_USERNAME
-import homeassistant.helpers.config_validation as cv
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_point_in_time
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.util import dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,18 +33,22 @@ CONF_ACCESS_TOKEN_SECRET = "access_token_secret"
 
 ATTR_MEDIA = "media"
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+PLATFORM_SCHEMA = NOTIFY_PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_ACCESS_TOKEN): cv.string,
-        vol.Required(CONF_ACCESS_TOKEN_SECRET): cv.string,
-        vol.Required(CONF_CONSUMER_KEY): cv.string,
-        vol.Required(CONF_CONSUMER_SECRET): cv.string,
-        vol.Optional(CONF_USERNAME): cv.string,
+        probatio.Required(probatio.Secret(CONF_ACCESS_TOKEN)): cv.string,
+        probatio.Required(probatio.Secret(CONF_ACCESS_TOKEN_SECRET)): cv.string,
+        probatio.Required(CONF_CONSUMER_KEY): cv.string,
+        probatio.Required(probatio.Secret(CONF_CONSUMER_SECRET)): cv.string,
+        probatio.Optional(CONF_USERNAME): cv.string,
     }
 )
 
 
-def get_service(hass, config, discovery_info=None):
+def get_service(
+    hass: HomeAssistant,
+    config: ConfigType,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> TwitterNotificationService:
     """Get the Twitter notification service."""
     return TwitterNotificationService(
         hass,
@@ -63,15 +73,17 @@ class TwitterNotificationService(BaseNotificationService):
         username,
     ):
         """Initialize the service."""
-        self.user = username
+        self.default_user = username
         self.hass = hass
         self.api = TwitterAPI(
             consumer_key, consumer_secret, access_token_key, access_token_secret
         )
 
-    def send_message(self, message="", **kwargs):
+    @override
+    def send_message(self, message: str = "", **kwargs: Any) -> None:
         """Tweet a message, optionally with media."""
         data = kwargs.get(ATTR_DATA)
+        targets = kwargs.get(ATTR_TARGET)
 
         media = None
         if data:
@@ -80,14 +92,18 @@ class TwitterNotificationService(BaseNotificationService):
                 _LOGGER.warning("'%s' is not a whitelisted directory", media)
                 return
 
-        callback = partial(self.send_message_callback, message)
+        if targets:
+            for target in targets:
+                callback = partial(self.send_message_callback, message, target)
+                self.upload_media_then_callback(callback, media)
+        else:
+            callback = partial(self.send_message_callback, message, self.default_user)
+            self.upload_media_then_callback(callback, media)
 
-        self.upload_media_then_callback(callback, media)
-
-    def send_message_callback(self, message, media_id=None):
+    def send_message_callback(self, message, user, media_id=None):
         """Tweet a message, optionally with media."""
-        if self.user:
-            user_resp = self.api.request("users/lookup", {"screen_name": self.user})
+        if user:
+            user_resp = self.api.request("users/lookup", {"screen_name": user})
             user_id = user_resp.json()[0]["id"]
             if user_resp.status_code != HTTPStatus.OK:
                 self.log_error_resp(user_resp)
@@ -114,10 +130,11 @@ class TwitterNotificationService(BaseNotificationService):
         else:
             _LOGGER.debug("Message posted: %s", resp.json())
 
-    def upload_media_then_callback(self, callback, media_path=None):
+    def upload_media_then_callback(self, callback, media_path=None) -> None:
         """Upload media."""
         if not media_path:
-            return callback()
+            callback()
+            return
 
         with open(media_path, "rb") as file:
             total_bytes = os.path.getsize(media_path)
@@ -126,7 +143,7 @@ class TwitterNotificationService(BaseNotificationService):
 
             if 199 > resp.status_code < 300:
                 self.log_error_resp(resp)
-                return None
+                return
 
             media_id = resp.json()["media_id"]
             media_id = self.upload_media_chunked(file, total_bytes, media_id)
@@ -134,10 +151,11 @@ class TwitterNotificationService(BaseNotificationService):
             resp = self.upload_media_finalize(media_id)
             if 199 > resp.status_code < 300:
                 self.log_error_resp(resp)
-                return None
+                return
 
             if resp.json().get("processing_info") is None:
-                return callback(media_id)
+                callback(media_id)
+                return
 
             self.check_status_until_done(media_id, callback)
 
@@ -194,7 +212,7 @@ class TwitterNotificationService(BaseNotificationService):
             "media/upload", {"command": "FINALIZE", "media_id": media_id}
         )
 
-    def check_status_until_done(self, media_id, callback, *args):
+    def check_status_until_done(self, media_id, callback, *args) -> None:
         """Upload media, STATUS phase."""
         resp = self.api.request(
             "media/upload",
@@ -208,14 +226,15 @@ class TwitterNotificationService(BaseNotificationService):
         _LOGGER.debug("media processing %s status: %s", media_id, processing_info)
 
         if processing_info["state"] in {"succeeded", "failed"}:
-            return callback(media_id)
+            callback(media_id)
+            return
 
         check_after_secs = processing_info["check_after_secs"]
         _LOGGER.debug(
             "media processing waiting %s seconds to check status", str(check_after_secs)
         )
 
-        when = datetime.now() + timedelta(seconds=check_after_secs)
+        when = dt_util.now() + timedelta(seconds=check_after_secs)
         myself = partial(self.check_status_until_done, media_id, callback)
         async_track_point_in_time(self.hass, myself, when)
 

@@ -1,10 +1,12 @@
 {
   "domain": "airnow",
   "name": "AirNow",
+  "categories": ["weather_alerts.air_quality_pollen"],
+  "codeowners": ["@asymworks"],
   "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/airnow",
-  "requirements": ["pyairnow==1.1.0"],
-  "codeowners": ["@asymworks"],
+  "integration_type": "service",
   "iot_class": "cloud_polling",
-  "loggers": ["pyairnow"]
+  "loggers": ["pyairnow"],
+  "requirements": ["pyairnow==1.4.0"]
 }

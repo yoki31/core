@@ -1,8 +1,17 @@
 {
   "domain": "frontier_silicon",
   "name": "Frontier Silicon",
+  "categories": ["media_entertainment.speakers_audio"],
+  "codeowners": ["@wlcrs"],
+  "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/frontier_silicon",
-  "requirements": ["afsapi==0.0.4"],
-  "codeowners": [],
-  "iot_class": "local_push"
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "loggers": ["afsapi"],
+  "requirements": ["afsapi==1.0.2"],
+  "ssdp": [
+    {
+      "st": "urn:schemas-frontier-silicon-com:undok:fsapi:1"
+    }
+  ]
 }

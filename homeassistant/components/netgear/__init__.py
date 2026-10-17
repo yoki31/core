@@ -1,30 +1,30 @@
 """Support for Netgear routers."""
-from datetime import timedelta
+
 import logging
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_PORT, CONF_SSL
+from homeassistant.const import CONF_PORT, CONF_SSL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-from .const import (
-    DOMAIN,
-    KEY_COORDINATOR,
-    KEY_COORDINATOR_TRAFFIC,
-    KEY_ROUTER,
-    PLATFORMS,
+from .const import PLATFORMS
+from .coordinator import (
+    NetgearConfigEntry,
+    NetgearFirmwareCoordinator,
+    NetgearLinkCoordinator,
+    NetgearRuntimeData,
+    NetgearSpeedTestCoordinator,
+    NetgearTrackerCoordinator,
+    NetgearTrafficMeterCoordinator,
+    NetgearUtilizationCoordinator,
 )
 from .errors import CannotLoginException
 from .router import NetgearRouter
 
 _LOGGER = logging.getLogger(__name__)
 
-SCAN_INTERVAL = timedelta(seconds=30)
 
-
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: NetgearConfigEntry) -> None:
     """Set up Netgear component."""
     router = NetgearRouter(hass, entry)
     try:
@@ -38,81 +38,97 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if port != router.port or ssl != router.ssl:
         data = {**entry.data, CONF_PORT: router.port, CONF_SSL: router.ssl}
         hass.config_entries.async_update_entry(entry, data=data)
-        _LOGGER.info(
-            "Netgear port-SSL combination updated from (%i, %r) to (%i, %r), "
-            "this should only occur after a firmware update",
+        _LOGGER.warning(
+            (
+                "Netgear port-SSL combination updated from (%i, %r) to (%i, %r), "
+                "this should only occur after a firmware update"
+            ),
             port,
             ssl,
             router.port,
             router.ssl,
         )
 
-    hass.data.setdefault(DOMAIN, {})
-
-    entry.async_on_unload(entry.add_update_listener(update_listener))
-
-    device_registry = dr.async_get(hass)
-    device_registry.async_get_or_create(
-        config_entry_id=entry.entry_id,
-        identifiers={(DOMAIN, entry.unique_id)},
-        manufacturer="Netgear",
-        name=router.device_name,
-        model=router.model,
-        sw_version=router.firmware_version,
-        hw_version=router.hardware_version,
-        configuration_url=f"http://{entry.data[CONF_HOST]}/",
-    )
-
-    async def async_update_devices() -> bool:
-        """Fetch data from the router."""
-        return await router.async_update_device_trackers()
-
-    async def async_update_traffic_meter() -> dict:
-        """Fetch data from the router."""
-        return await router.async_get_traffic_meter()
-
     # Create update coordinators
-    coordinator = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name=f"{router.device_name} Devices",
-        update_method=async_update_devices,
-        update_interval=SCAN_INTERVAL,
-    )
-    coordinator_traffic_meter = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name=f"{router.device_name} Traffic meter",
-        update_method=async_update_traffic_meter,
-        update_interval=SCAN_INTERVAL,
-    )
+    coordinator_tracker = NetgearTrackerCoordinator(hass, router, entry)
+    coordinator_traffic_meter = NetgearTrafficMeterCoordinator(hass, router, entry)
+    coordinator_speed_test = NetgearSpeedTestCoordinator(hass, router, entry)
+    coordinator_firmware = NetgearFirmwareCoordinator(hass, router, entry)
+    coordinator_utilization = NetgearUtilizationCoordinator(hass, router, entry)
+    coordinator_link = NetgearLinkCoordinator(hass, router, entry)
 
-    await coordinator.async_config_entry_first_refresh()
+    if router.track_devices:
+        await coordinator_tracker.async_config_entry_first_refresh()
     await coordinator_traffic_meter.async_config_entry_first_refresh()
+    await coordinator_firmware.async_config_entry_first_refresh()
+    await coordinator_utilization.async_config_entry_first_refresh()
+    await coordinator_link.async_config_entry_first_refresh()
 
-    hass.data[DOMAIN][entry.entry_id] = {
-        KEY_ROUTER: router,
-        KEY_COORDINATOR: coordinator,
-        KEY_COORDINATOR_TRAFFIC: coordinator_traffic_meter,
-    }
+    entry.runtime_data = NetgearRuntimeData(
+        router=router,
+        coordinator_tracker=coordinator_tracker,
+        coordinator_traffic=coordinator_traffic_meter,
+        coordinator_speed=coordinator_speed_test,
+        coordinator_firmware=coordinator_firmware,
+        coordinator_utilization=coordinator_utilization,
+        coordinator_link=coordinator_link,
+    )
 
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    # Register the router device before platforms so tracked devices can always
+    # resolve it as their via_device parent, regardless of platform setup order.
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, **router.device_info
+    )
 
-    return True
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: NetgearConfigEntry) -> None:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    try:
+        await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
+    finally:
+        router = entry.runtime_data.router
 
-    if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
-        if not hass.data[DOMAIN]:
-            hass.data.pop(DOMAIN)
+        if not router.track_devices:
+            router_id = None
+            # Remove devices that are no longer tracked
+            device_registry = dr.async_get(hass)
+            devices = dr.async_entries_for_config_entry(device_registry, entry.entry_id)
+            for device_entry in devices:
+                if device_entry.via_device_id is None:
+                    router_id = device_entry.id
+                    continue  # do not remove the router itself
+                device_registry.async_remove_device(device_entry.id)
+            # Remove entities that are no longer tracked
+            entity_registry = er.async_get(hass)
+            entries = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+            for entity_entry in entries:
+                if entity_entry.device_id is not router_id:
+                    entity_registry.async_remove(entity_entry.entity_id)
 
-    return unload_ok
 
+async def async_remove_config_entry_device(
+    hass: HomeAssistant,
+    config_entry: NetgearConfigEntry,
+    device_entry: dr.AnyDeviceEntry,
+) -> bool:
+    """Remove a device from a config entry."""
+    if not isinstance(device_entry, dr.DeviceEntry):
+        # This integration does not create child devices.
+        return False
+    router = config_entry.runtime_data.router
 
-async def update_listener(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
-    """Handle options update."""
-    await hass.config_entries.async_reload(config_entry.entry_id)
+    device_mac = None
+    for connection in device_entry.connections:
+        if connection[0] == dr.CONNECTION_NETWORK_MAC:
+            device_mac = connection[1]
+            break
+
+    if device_mac is None:
+        return False
+
+    if device_mac not in router.devices:
+        return True
+
+    return not router.devices[device_mac]["active"]

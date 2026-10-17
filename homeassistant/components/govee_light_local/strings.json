@@ -1,0 +1,47 @@
+{
+  "config": {
+    "step": {
+      "confirm": {
+        "description": "[%key:common::config_flow::description::confirm_setup%]"
+      }
+    }
+  },
+  "entity": {
+    "light": {
+      "govee_light": {
+        "state_attributes": {
+          "effect": {
+            "state": {
+              "breathe": "Breathe",
+              "candlelight": "Candlelight",
+              "crossing": "Crossing",
+              "dating": "Dating",
+              "energetic": "Energetic",
+              "movie": "Movie",
+              "none": "None",
+              "romantic": "Romantic",
+              "snowflake": "Snowflake",
+              "sunrise": "Sunrise",
+              "sunset": "Sunset",
+              "twinkle": "Twinkle"
+            }
+          }
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "bind_failed": {
+      "message": "Could not listen for Govee devices: {error}"
+    },
+    "no_devices_found": {
+      "message": "[%key:common::config_flow::abort::no_devices_found%]"
+    },
+    "no_listening_addresses": {
+      "message": "No enabled network adapter has an IPv4 address to listen on"
+    },
+    "port_in_use": {
+      "message": "Port {port} is already in use"
+    }
+  }
+}

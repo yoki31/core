@@ -1,14 +1,38 @@
 """Constants for Camera component."""
-from typing import Final
+
+from enum import IntFlag, StrEnum
+from typing import TYPE_CHECKING, Final
+
+from homeassistant.util.hass_dict import HassKey
+
+if TYPE_CHECKING:
+    from homeassistant.helpers.entity_component import EntityComponent
+
+    from .entity import Camera
+    from .prefs import CameraPreferences
 
 DOMAIN: Final = "camera"
+DATA_COMPONENT: HassKey[EntityComponent[Camera]] = HassKey(DOMAIN)
 
-DATA_CAMERA_PREFS: Final = "camera_prefs"
-DATA_RTSP_TO_WEB_RTC: Final = "rtsp_to_web_rtc"
+DEFAULT_CONTENT_TYPE: Final = "image/jpeg"
+ENTITY_IMAGE_URL: Final = "/api/camera_proxy/{0}?token={1}"
+
+MIN_STREAM_INTERVAL: Final = 0.5  # seconds
+
+DATA_CAMERA_PREFS: HassKey[CameraPreferences] = HassKey("camera_prefs")
 
 PREF_PRELOAD_STREAM: Final = "preload_stream"
+PREF_ORIENTATION: Final = "orientation"
 
 SERVICE_RECORD: Final = "record"
+SERVICE_ENABLE_MOTION: Final = "enable_motion_detection"
+SERVICE_DISABLE_MOTION: Final = "disable_motion_detection"
+SERVICE_SNAPSHOT: Final = "snapshot"
+SERVICE_PLAY_STREAM: Final = "play_stream"
+
+ATTR_FILENAME: Final = "filename"
+ATTR_MEDIA_PLAYER: Final = "media_player"
+ATTR_FORMAT: Final = "format"
 
 CONF_LOOKBACK: Final = "lookback"
 CONF_DURATION: Final = "duration"
@@ -16,11 +40,41 @@ CONF_DURATION: Final = "duration"
 CAMERA_STREAM_SOURCE_TIMEOUT: Final = 10
 CAMERA_IMAGE_TIMEOUT: Final = 10
 
-# A camera that supports CAMERA_SUPPORT_STREAM may have a single stream
-# type which is used to inform the frontend which player to use.
-# Streams with RTSP sources typically use the stream component which uses
-# HLS for display. WebRTC streams use the home assistant core for a signal
-# path to initiate a stream, but the stream itself is between the client and
-# device.
-STREAM_TYPE_HLS = "hls"
-STREAM_TYPE_WEB_RTC = "web_rtc"
+
+class CameraEntityStateAttribute(StrEnum):
+    """State attributes for camera entities."""
+
+    ACCESS_TOKEN = "access_token"
+    MODEL_NAME = "model_name"
+    BRAND = "brand"
+    MOTION_DETECTION = "motion_detection"
+
+
+class CameraState(StrEnum):
+    """Camera entity states."""
+
+    RECORDING = "recording"
+    STREAMING = "streaming"
+    IDLE = "idle"
+
+
+class StreamType(StrEnum):
+    """Camera stream type.
+
+    A camera that supports CAMERA_SUPPORT_STREAM may have a single stream
+    type which is used to inform the frontend which player to use.
+    Streams with RTSP sources typically use the stream component which uses
+    HLS for display. WebRTC streams use the home assistant core for a signal
+    path to initiate a stream, but the stream itself is between the client and
+    device.
+    """
+
+    HLS = "hls"
+    WEB_RTC = "web_rtc"
+
+
+class CameraEntityFeature(IntFlag):
+    """Supported features of the camera entity."""
+
+    ON_OFF = 1
+    STREAM = 2

@@ -1,18 +1,24 @@
 """Tests for the Atag climate platform."""
+
+from collections.abc import Generator
+from datetime import timedelta
 from unittest.mock import PropertyMock, patch
 
-from homeassistant.components.atag.climate import DOMAIN, PRESET_MAP
+from freezegun.api import FrozenDateTimeFactory
+import pytest
+from syrupy.assertion import SnapshotAssertion
+
+from homeassistant.components.atag.climate import PRESET_MAP
 from homeassistant.components.climate import (
-    ATTR_HVAC_ACTION,
     ATTR_HVAC_MODE,
     ATTR_PRESET_MODE,
     DOMAIN as CLIMATE_DOMAIN,
-    HVAC_MODE_HEAT,
+    PRESET_AWAY,
     SERVICE_SET_HVAC_MODE,
     SERVICE_SET_PRESET_MODE,
     SERVICE_SET_TEMPERATURE,
+    HVACMode,
 )
-from homeassistant.components.climate.const import CURRENT_HVAC_IDLE, PRESET_AWAY
 from homeassistant.components.homeassistant import DOMAIN as HA_DOMAIN
 from homeassistant.const import (
     ATTR_ENTITY_ID,
@@ -24,23 +30,31 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 
-from tests.components.atag import UID, init_integration
+from . import UID, init_integration
+
+from tests.common import async_fire_time_changed, snapshot_platform
 from tests.test_util.aiohttp import AiohttpClientMocker
 
-CLIMATE_ID = f"{Platform.CLIMATE}.{DOMAIN}"
+CLIMATE_ID = "climate.atag_thermostat_atag"
 
 
-async def test_climate(
-    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+@pytest.fixture(autouse=True)
+def override_platforms() -> Generator[None]:
+    """Override PLATFORMS."""
+    with patch("homeassistant.components.atag.PLATFORMS", [Platform.CLIMATE]):
+        yield
+
+
+async def test_all_entities(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    entity_registry: er.EntityRegistry,
+    snapshot: SnapshotAssertion,
 ) -> None:
-    """Test the creation and values of Atag climate device."""
-    await init_integration(hass, aioclient_mock)
-    entity_registry = er.async_get(hass)
+    """Test all entities."""
+    entry = await init_integration(hass, aioclient_mock)
 
-    assert entity_registry.async_is_registered(CLIMATE_ID)
-    entity = entity_registry.async_get(CLIMATE_ID)
-    assert entity.unique_id == f"{UID}-{Platform.CLIMATE}"
-    assert hass.states.get(CLIMATE_ID).attributes[ATTR_HVAC_ACTION] == CURRENT_HVAC_IDLE
+    await snapshot_platform(hass, entity_registry, snapshot, entry.entry_id)
 
 
 async def test_setting_climate(
@@ -72,11 +86,11 @@ async def test_setting_climate(
         await hass.services.async_call(
             CLIMATE_DOMAIN,
             SERVICE_SET_HVAC_MODE,
-            {ATTR_ENTITY_ID: CLIMATE_ID, ATTR_HVAC_MODE: HVAC_MODE_HEAT},
+            {ATTR_ENTITY_ID: CLIMATE_ID, ATTR_HVAC_MODE: HVACMode.HEAT},
             blocking=True,
         )
         await hass.async_block_till_done()
-        mock_set_hvac.assert_called_once_with(HVAC_MODE_HEAT)
+        mock_set_hvac.assert_called_once_with(HVACMode.HEAT)
 
 
 async def test_incorrect_modes(
@@ -95,15 +109,17 @@ async def test_incorrect_modes(
 async def test_update_failed(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     """Test data is not destroyed on update failure."""
     entry = await init_integration(hass, aioclient_mock)
     await async_setup_component(hass, HA_DOMAIN, {})
-    assert hass.states.get(CLIMATE_ID).state == HVAC_MODE_HEAT
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    assert hass.states.get(CLIMATE_ID).state == HVACMode.AUTO
+    coordinator = entry.runtime_data
     with patch("pyatag.AtagOne.update", side_effect=TimeoutError) as updater:
-        await coordinator.async_refresh()
-        await hass.async_block_till_done()
+        freezer.tick(timedelta(seconds=60))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done(wait_background_tasks=True)
         updater.assert_called_once()
         assert not coordinator.last_update_success
-        assert coordinator.data.id == UID
+        assert coordinator.atag.id == UID

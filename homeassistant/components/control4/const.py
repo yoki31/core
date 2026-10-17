@@ -1,18 +1,13 @@
 """Constants for the Control4 integration."""
 
+from datetime import timedelta
+
 DOMAIN = "control4"
 
-DEFAULT_SCAN_INTERVAL = 5
-MIN_SCAN_INTERVAL = 1
+SCAN_INTERVAL = timedelta(seconds=5)
 
-CONF_ACCOUNT = "account"
-CONF_DIRECTOR = "director"
-CONF_DIRECTOR_TOKEN_EXPIRATION = "director_token_expiry"
-CONF_DIRECTOR_SW_VERSION = "director_sw_version"
-CONF_DIRECTOR_MODEL = "director_model"
-CONF_DIRECTOR_ALL_ITEMS = "director_all_items"
+API_RETRY_TIMES = 5
+
 CONF_CONTROLLER_UNIQUE_ID = "controller_unique_id"
-
-CONF_CONFIG_LISTENER = "config_listener"
 
 CONTROL4_ENTITY_TYPE = 7

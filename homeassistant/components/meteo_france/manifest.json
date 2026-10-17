@@ -1,10 +1,12 @@
 {
   "domain": "meteo_france",
   "name": "M\u00e9t\u00e9o-France",
+  "categories": ["weather_alerts.forecasts", "weather_alerts.public_warnings"],
+  "codeowners": ["@hacf-fr/reviewers", "@oncleben31", "@Quentame"],
   "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/meteo_france",
-  "requirements": ["meteofrance-api==1.0.2"],
-  "codeowners": ["@hacf-fr", "@oncleben31", "@Quentame"],
+  "integration_type": "service",
   "iot_class": "cloud_polling",
-  "loggers": ["meteofrance_api"]
+  "loggers": ["meteofrance_api"],
+  "requirements": ["meteofrance-api==1.5.0"]
 }

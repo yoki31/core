@@ -1,15 +1,15 @@
 """Support for Nest devices."""
-from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import asyncio
-from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 import logging
+from typing import override
 
 from aiohttp import web
 from google_nest_sdm.camera_traits import CameraClipPreviewTrait
 from google_nest_sdm.device import Device
+from google_nest_sdm.device_manager import DeviceManager
 from google_nest_sdm.event import EventMessage
 from google_nest_sdm.event_media import Media
 from google_nest_sdm.exceptions import (
@@ -18,14 +18,15 @@ from google_nest_sdm.exceptions import (
     ConfigurationException,
     DecodeException,
     SubscriberException,
+    SubscriberTimeoutException,
 )
-import voluptuous as vol
+from google_nest_sdm.traits import TraitType
+import probatio
 
 from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.components.camera import Image, img_util
-from homeassistant.components.http.const import KEY_HASS_USER
+from homeassistant.components.http import KEY_HASS_USER
 from homeassistant.components.http.view import HomeAssistantView
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_BINARY_SENSORS,
     CONF_CLIENT_ID,
@@ -33,94 +34,91 @@ from homeassistant.const import (
     CONF_MONITORED_CONDITIONS,
     CONF_SENSORS,
     CONF_STRUCTURE,
+    EVENT_HOMEASSISTANT_STOP,
     Platform,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import (
     ConfigEntryAuthFailed,
+    ConfigEntryError,
     ConfigEntryNotReady,
     HomeAssistantError,
     Unauthorized,
 )
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import (
+    config_validation as cv,
+    device_registry as dr,
+    entity_registry as er,
+)
 from homeassistant.helpers.entity_registry import async_entries_for_device
 from homeassistant.helpers.typing import ConfigType
 
-from . import api, config_flow
+from . import api
 from .const import (
+    CONF_CLOUD_PROJECT_ID,
     CONF_PROJECT_ID,
     CONF_SUBSCRIBER_ID,
-    DATA_NEST_CONFIG,
+    CONF_SUBSCRIBER_ID_IMPORTED,
+    CONF_SUBSCRIPTION_NAME,
     DATA_SDM,
-    DATA_SUBSCRIBER,
     DOMAIN,
 )
 from .events import EVENT_NAME_MAP, NEST_EVENT
-from .legacy import async_setup_legacy, async_setup_legacy_entry
 from .media_source import (
+    EVENT_MEDIA_API_URL_FORMAT,
+    EVENT_THUMBNAIL_URL_FORMAT,
     async_get_media_event_store,
+    async_get_media_source_devices,
     async_get_transcoder,
-    get_media_source_devices,
 )
+from .services import async_setup_services
+from .types import DevicesAddedListener, NestConfigEntry, NestData
 
 _LOGGER = logging.getLogger(__name__)
 
-DATA_NEST_UNAVAILABLE = "nest_unavailable"
 
-NEST_SETUP_NOTIFICATION = "nest_setup"
-
-SENSOR_SCHEMA = vol.Schema(
-    {vol.Optional(CONF_MONITORED_CONDITIONS): vol.All(cv.ensure_list)}
+SENSOR_SCHEMA = probatio.Schema(
+    {probatio.Optional(CONF_MONITORED_CONDITIONS): probatio.All(probatio.EnsureList())}
 )
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        DOMAIN: vol.Schema(
+        DOMAIN: probatio.Schema(
             {
-                vol.Required(CONF_CLIENT_ID): cv.string,
-                vol.Required(CONF_CLIENT_SECRET): cv.string,
+                probatio.Required(CONF_CLIENT_ID): cv.string,
+                probatio.Required(probatio.Secret(CONF_CLIENT_SECRET)): cv.string,
                 # Required to use the new API (optional for compatibility)
-                vol.Optional(CONF_PROJECT_ID): cv.string,
-                vol.Optional(CONF_SUBSCRIBER_ID): cv.string,
+                probatio.Optional(CONF_PROJECT_ID): cv.string,
+                probatio.Optional(CONF_SUBSCRIBER_ID): cv.string,
                 # Config that only currently works on the old API
-                vol.Optional(CONF_STRUCTURE): vol.All(cv.ensure_list, [cv.string]),
-                vol.Optional(CONF_SENSORS): SENSOR_SCHEMA,
-                vol.Optional(CONF_BINARY_SENSORS): SENSOR_SCHEMA,
+                probatio.Optional(CONF_STRUCTURE): probatio.All(
+                    probatio.EnsureList(), [cv.string]
+                ),
+                probatio.Optional(CONF_SENSORS): SENSOR_SCHEMA,
+                probatio.Optional(CONF_BINARY_SENSORS): SENSOR_SCHEMA,
             }
         )
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
 
 # Platforms for SDM API
-PLATFORMS = [Platform.SENSOR, Platform.CAMERA, Platform.CLIMATE]
+PLATFORMS = [Platform.CAMERA, Platform.CLIMATE, Platform.EVENT, Platform.SENSOR]
 
 # Fetch media events with a disk backed cache, with a limit for each camera
-# device. The largest media items are mp4 clips at ~120kb each, and we target
+# device. The largest media items are mp4 clips at ~450kb each, and we target
 # ~125MB of storage per camera to try to balance a reasonable user experience
 # for event history not not filling the disk.
-EVENT_MEDIA_CACHE_SIZE = 1024  # number of events
+EVENT_MEDIA_CACHE_SIZE = 256  # number of events
 
 THUMBNAIL_SIZE_PX = 175
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up Nest components with dispatch between old/new flows."""
-    hass.data[DOMAIN] = {}
-    hass.data[DOMAIN][DATA_NEST_CONFIG] = config.get(DOMAIN)
-
-    if DOMAIN not in config:
-        return True
-
-    config_mode = config_flow.get_config_mode(hass)
-    if config_mode == config_flow.ConfigMode.LEGACY:
-        return await async_setup_legacy(hass, config)
-
-    config_flow.register_flow_implementation_from_config(hass, config)
-
     hass.http.register_view(NestEventMediaView(hass))
     hass.http.register_view(NestEventMediaThumbnailView(hass))
-
+    async_setup_services(hass)
     return True
 
 
@@ -128,128 +126,247 @@ class SignalUpdateCallback:
     """An EventCallback invoked when new events arrive from subscriber."""
 
     def __init__(
-        self, hass: HomeAssistant, config_reload_cb: Callable[[], Awaitable[None]]
+        self,
+        hass: HomeAssistant,
+        config_entry: NestConfigEntry,
     ) -> None:
         """Initialize EventCallback."""
         self._hass = hass
-        self._config_reload_cb = config_reload_cb
+        self._config_entry = config_entry
+        self._device_listeners: list[DevicesAddedListener] = []
+        self._known_devices: dict[str, Device] = {}
+        self._device_manager: DeviceManager | None = None
 
     async def async_handle_event(self, event_message: EventMessage) -> None:
         """Process an incoming EventMessage."""
-        if event_message.relation_update:
-            _LOGGER.info("Devices or homes have changed; Need reload to take effect")
-            return
         if not event_message.resource_update_name:
             return
         device_id = event_message.resource_update_name
         if not (events := event_message.resource_update_events):
             return
         _LOGGER.debug("Event Update %s", events.keys())
-        device_registry = await self._hass.helpers.device_registry.async_get_registry()
-        device_entry = device_registry.async_get_device({(DOMAIN, device_id)})
+        device_registry = dr.async_get(self._hass)
+        device_entry = device_registry.async_get_device_by_identifier(
+            (DOMAIN, device_id), self._config_entry.entry_id
+        )
         if not device_entry:
             return
+        supported_traits = self._supported_traits(device_id)
         for api_event_type, image_event in events.items():
             if not (event_type := EVENT_NAME_MAP.get(api_event_type)):
                 continue
+            nest_event_id = image_event.event_token
             message = {
                 "device_id": device_entry.id,
                 "type": event_type,
                 "timestamp": event_message.timestamp,
-                "nest_event_id": image_event.event_token,
+                "nest_event_id": nest_event_id,
             }
+            if (
+                TraitType.CAMERA_EVENT_IMAGE in supported_traits
+                or TraitType.CAMERA_CLIP_PREVIEW in supported_traits
+            ):
+                attachment = {
+                    "image": EVENT_THUMBNAIL_URL_FORMAT.format(
+                        device_id=device_entry.id, event_token=image_event.event_token
+                    )
+                }
+                if TraitType.CAMERA_CLIP_PREVIEW in supported_traits:
+                    attachment["video"] = EVENT_MEDIA_API_URL_FORMAT.format(
+                        device_id=device_entry.id, event_token=image_event.event_token
+                    )
+                message["attachment"] = attachment
+            if image_event.zones:
+                message["zones"] = image_event.zones
             self._hass.bus.async_fire(NEST_EVENT, message)
 
+    def _supported_traits(self, device_id: str) -> list[str]:
+        if (
+            not self._config_entry.runtime_data
+            or not (device_manager := self._config_entry.runtime_data.device_manager)
+            or not (device := device_manager.devices.get(device_id))
+        ):
+            return []
+        return list(device.traits)
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    def set_device_manager(self, device_manager: DeviceManager) -> None:
+        """Set the device manager and register for device changes."""
+        self._device_manager = device_manager
+        device_manager.set_change_callback(self._devices_updated_cb)
+        self._update_devices(self._device_manager.devices)
+
+    async def _devices_updated_cb(self) -> None:
+        """Handle callback when devices are updated."""
+        _LOGGER.debug("Devices updated callback invoked")
+        if self._device_manager is None:
+            _LOGGER.debug("No device manager available")
+            return
+        self._update_devices(self._device_manager.devices)
+
+    def register_devices_listener(self, listener: DevicesAddedListener) -> None:
+        """Add a listener for device changes."""
+        self._device_listeners.append(listener)
+        # Immediately notify about existing devices
+        listener(list(self._known_devices.values()))
+
+    def _update_devices(self, devices: dict[str, Device]) -> None:
+        """Update the set of devices and notify listeners of changes.
+
+        This is invoked when the set of devices changes with the entire set of
+        devices, and will notify listeners about any newly added devices and
+        remove devices from the device registry that are no longer present.
+        """
+        added_devices = []
+        for device_id, device in devices.items():
+            if device_id in self._known_devices:
+                continue
+            added_devices.append(device)
+            self._known_devices[device_id] = device
+        if added_devices:
+            _LOGGER.debug("Adding new devices: %s", added_devices)
+            for listener in self._device_listeners:
+                listener(added_devices)
+
+        # Remove any device entries that are no longer present
+        device_registry = dr.async_get(self._hass)
+        device_entries = dr.async_entries_for_config_entry(
+            device_registry, self._config_entry.entry_id
+        )
+        for device_entry in device_entries:
+            device_id = next(iter(device_entry.identifiers))[1]
+            if device_id in devices:
+                continue
+            _LOGGER.info("Removing stale device entry '%s'", device_id)
+            device_registry.async_remove_device(device_entry.id)
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: NestConfigEntry) -> None:
     """Set up Nest from a config entry with dispatch between old/new flows."""
-
     if DATA_SDM not in entry.data:
-        return await async_setup_legacy_entry(hass, entry)
+        hass.async_create_task(hass.config_entries.async_remove(entry.entry_id))
+        raise ConfigEntryError(
+            translation_domain=DOMAIN,
+            translation_key="legacy_entry",
+        )
 
-    subscriber = await api.new_subscriber(hass, entry)
+    if entry.unique_id != entry.data[CONF_PROJECT_ID]:
+        hass.config_entries.async_update_entry(
+            entry, unique_id=entry.data[CONF_PROJECT_ID]
+        )
+
+    auth = await api.new_auth(hass, entry)
+    await auth.async_get_access_token()
+
+    subscriber = await api.new_subscriber(hass, entry, auth)
     if not subscriber:
-        return False
+        raise ConfigEntryError(
+            translation_domain=DOMAIN,
+            translation_key="subscriber_create_failed",
+        )
     # Keep media for last N events in memory
     subscriber.cache_policy.event_cache_size = EVENT_MEDIA_CACHE_SIZE
     subscriber.cache_policy.fetch = True
     # Use disk backed event media store
-    subscriber.cache_policy.store = await async_get_media_event_store(hass, subscriber)
+    subscriber.cache_policy.store = await async_get_media_event_store(
+        hass, entry, subscriber
+    )
     subscriber.cache_policy.transcoder = await async_get_transcoder(hass)
 
-    async def async_config_reload() -> None:
-        await hass.config_entries.async_reload(entry.entry_id)
-
-    callback = SignalUpdateCallback(hass, async_config_reload)
-    subscriber.set_update_callback(callback.async_handle_event)
+    # The device manager has a single change callback. When the change
+    # callback is invoked, we update the DeviceListener with the current
+    # set of devices which will notify any registered listeners with the
+    # changes.
+    update_callback = SignalUpdateCallback(hass, entry)
+    subscriber.set_update_callback(update_callback.async_handle_event)
     try:
-        await subscriber.start_async()
+        unsub = await subscriber.start_async()
     except AuthException as err:
-        _LOGGER.debug("Subscriber authentication error: %s", err)
-        raise ConfigEntryAuthFailed from err
+        raise ConfigEntryAuthFailed(
+            translation_domain=DOMAIN,
+            translation_key="reauth_required",
+        ) from err
     except ConfigurationException as err:
-        _LOGGER.error("Configuration error: %s", err)
-        subscriber.stop_async()
-        return False
+        raise ConfigEntryError(
+            translation_domain=DOMAIN,
+            translation_key="subscriber_configuration_error",
+        ) from err
+    except SubscriberTimeoutException as err:
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="subscriber_timeout",
+        ) from err
     except SubscriberException as err:
-        if DATA_NEST_UNAVAILABLE not in hass.data[DOMAIN]:
-            _LOGGER.error("Subscriber error: %s", err)
-            hass.data[DOMAIN][DATA_NEST_UNAVAILABLE] = True
-        subscriber.stop_async()
-        raise ConfigEntryNotReady from err
+        # pylint: disable-next=home-assistant-log-and-raise
+        _LOGGER.error("Subscriber error: %s", err)
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="subscriber_error",
+        ) from err
 
     try:
-        await subscriber.async_get_device_manager()
+        device_manager = await subscriber.async_get_device_manager()
     except ApiException as err:
-        if DATA_NEST_UNAVAILABLE not in hass.data[DOMAIN]:
-            _LOGGER.error("Device manager error: %s", err)
-            hass.data[DOMAIN][DATA_NEST_UNAVAILABLE] = True
-        subscriber.stop_async()
-        raise ConfigEntryNotReady from err
+        unsub()
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="device_api_error",
+        ) from err
 
-    hass.data[DOMAIN].pop(DATA_NEST_UNAVAILABLE, None)
-    hass.data[DOMAIN][DATA_SUBSCRIBER] = subscriber
+    @callback
+    def on_hass_stop(_: Event) -> None:
+        """Close connection when hass stops."""
+        unsub()
 
-    hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, on_hass_stop)
+    )
 
-    return True
+    update_callback.set_device_manager(device_manager)
+
+    entry.async_on_unload(unsub)
+    entry.runtime_data = NestData(
+        subscriber=subscriber,
+        device_manager=device_manager,
+        register_devices_listener=update_callback.register_devices_listener,
+    )
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: NestConfigEntry) -> None:
     """Unload a config entry."""
-    if DATA_SDM not in entry.data:
-        # Legacy API
-        return True
-    _LOGGER.debug("Stopping nest subscriber")
-    subscriber = hass.data[DOMAIN][DATA_SUBSCRIBER]
-    subscriber.stop_async()
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok:
-        hass.data[DOMAIN].pop(DATA_SUBSCRIBER)
-        hass.data[DOMAIN].pop(DATA_NEST_UNAVAILABLE, None)
-
-    return unload_ok
+    await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
 
 
-async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def async_remove_entry(hass: HomeAssistant, entry: NestConfigEntry) -> None:
     """Handle removal of pubsub subscriptions created during config flow."""
-    if DATA_SDM not in entry.data or CONF_SUBSCRIBER_ID not in entry.data:
+    if (
+        DATA_SDM not in entry.data
+        or not (
+            CONF_SUBSCRIPTION_NAME in entry.data or CONF_SUBSCRIBER_ID in entry.data
+        )
+        or CONF_SUBSCRIBER_ID_IMPORTED in entry.data
+    ):
         return
-
-    subscriber = await api.new_subscriber(hass, entry)
-    if not subscriber:
-        return
-    _LOGGER.debug("Deleting subscriber '%s'", subscriber.subscriber_id)
+    if (subscription_name := entry.data.get(CONF_SUBSCRIPTION_NAME)) is None:
+        subscription_name = entry.data[CONF_SUBSCRIBER_ID]
+    admin_client = api.new_pubsub_admin_client(
+        hass,
+        access_token=entry.data["token"]["access_token"],
+        cloud_project_id=entry.data[CONF_CLOUD_PROJECT_ID],
+    )
+    _LOGGER.debug("Deleting subscription '%s'", subscription_name)
     try:
-        await subscriber.delete_subscription()
-    except (AuthException, SubscriberException) as err:
+        await admin_client.delete_subscription(subscription_name)
+    except ApiException as err:
         _LOGGER.warning(
-            "Unable to delete subscription '%s'; Will be automatically cleaned up by cloud console: %s",
-            subscriber.subscriber_id,
+            (
+                "Unable to delete subscription '%s'; Will be automatically cleaned up"
+                " by cloud console: %s"
+            ),
+            subscription_name,
             err,
         )
-    finally:
-        subscriber.stop_async()
 
 
 class NestEventViewBase(HomeAssistantView, ABC):
@@ -264,22 +381,22 @@ class NestEventViewBase(HomeAssistantView, ABC):
     ) -> web.StreamResponse:
         """Start a GET request."""
         user = request[KEY_HASS_USER]
-        entity_registry = await self.hass.helpers.entity_registry.async_get_registry()
+        entity_registry = er.async_get(self.hass)
         for entry in async_entries_for_device(entity_registry, device_id):
             if not user.permissions.check_entity(entry.entity_id, POLICY_READ):
                 raise Unauthorized(entity_id=entry.entity_id)
 
-        devices = await get_media_source_devices(self.hass)
+        devices = async_get_media_source_devices(self.hass)
         if not (nest_device := devices.get(device_id)):
             return self._json_error(
                 f"No Nest Device found for '{device_id}'", HTTPStatus.NOT_FOUND
             )
         try:
             media = await self.load_media(nest_device, event_token)
-        except DecodeException as err:
-            raise HomeAssistantError(
-                "Even token was invalid: %s" % event_token
-            ) from err
+        except DecodeException:
+            return self._json_error(
+                f"Event token was invalid '{event_token}'", HTTPStatus.NOT_FOUND
+            )
         except ApiException as err:
             raise HomeAssistantError("Unable to fetch media for event") from err
         if not media:
@@ -312,10 +429,12 @@ class NestEventMediaView(NestEventViewBase):
     url = "/api/nest/event_media/{device_id}/{event_token}"
     name = "api:nest:event_media"
 
+    @override
     async def load_media(self, nest_device: Device, event_token: str) -> Media | None:
         """Load the specified media."""
         return await nest_device.event_media_manager.get_media_from_token(event_token)
 
+    @override
     async def handle_media(self, media: Media) -> web.StreamResponse:
         """Process the specified media."""
         return web.Response(body=media.contents, content_type=media.content_type)
@@ -340,6 +459,7 @@ class NestEventMediaThumbnailView(NestEventViewBase):
         self._lock = asyncio.Lock()
         self.hass = hass
 
+    @override
     async def load_media(self, nest_device: Device, event_token: str) -> Media | None:
         """Load the specified media."""
         if CameraClipPreviewTrait.NAME in nest_device.traits:
@@ -351,11 +471,11 @@ class NestEventMediaThumbnailView(NestEventViewBase):
                 )
         return await nest_device.event_media_manager.get_media_from_token(event_token)
 
+    @override
     async def handle_media(self, media: Media) -> web.StreamResponse:
         """Start a GET request."""
         contents = media.contents
-        content_type = media.content_type
-        if content_type == "image/jpeg":
+        if (content_type := media.content_type) == "image/jpeg":
             image = Image(media.event_image_type.content_type, contents)
             contents = img_util.scale_jpeg_camera_image(
                 image, THUMBNAIL_SIZE_PX, THUMBNAIL_SIZE_PX

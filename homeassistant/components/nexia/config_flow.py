@@ -1,13 +1,19 @@
 """Config flow for Nexia integration."""
-import logging
 
+from collections.abc import Mapping
+import logging
+from typing import Any, override
+
+import aiohttp
 from nexia.const import BRAND_ASAIR, BRAND_NEXIA, BRAND_TRANE
 from nexia.home import NexiaHome
-from requests.exceptions import ConnectTimeout, HTTPError
-import voluptuous as vol
+import probatio
 
-from homeassistant import config_entries, core, exceptions
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     BRAND_ASAIR_NAME,
@@ -20,11 +26,11 @@ from .util import is_invalid_auth_code
 
 _LOGGER = logging.getLogger(__name__)
 
-DATA_SCHEMA = vol.Schema(
+DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_USERNAME): str,
-        vol.Required(CONF_PASSWORD): str,
-        vol.Required(CONF_BRAND, default=BRAND_NEXIA): vol.In(
+        probatio.Required(CONF_USERNAME): str,
+        probatio.Required(probatio.Secret(CONF_PASSWORD)): str,
+        probatio.Required(CONF_BRAND, default=BRAND_NEXIA): probatio.In(
             {
                 BRAND_NEXIA: BRAND_NEXIA_NAME,
                 BRAND_ASAIR: BRAND_ASAIR_NAME,
@@ -33,9 +39,14 @@ DATA_SCHEMA = vol.Schema(
         ),
     }
 )
+REAUTH_SCHEMA = probatio.Schema(
+    {
+        probatio.Required(probatio.Secret(CONF_PASSWORD)): str,
+    }
+)
 
 
-async def validate_input(hass: core.HomeAssistant, data):
+async def validate_input(hass: HomeAssistant, data):
     """Validate the user input allows us to connect.
 
     Data has the keys from DATA_SCHEMA with values provided by the user.
@@ -44,23 +55,23 @@ async def validate_input(hass: core.HomeAssistant, data):
     state_file = hass.config.path(
         f"{data[CONF_BRAND]}_config_{data[CONF_USERNAME]}.conf"
     )
+    session = async_get_clientsession(hass)
+    nexia_home = NexiaHome(
+        session,
+        username=data[CONF_USERNAME],
+        password=data[CONF_PASSWORD],
+        brand=data[CONF_BRAND],
+        device_name=hass.config.location_name,
+        state_file=state_file,
+    )
     try:
-        nexia_home = NexiaHome(
-            username=data[CONF_USERNAME],
-            password=data[CONF_PASSWORD],
-            brand=data[CONF_BRAND],
-            auto_login=False,
-            auto_update=False,
-            device_name=hass.config.location_name,
-            state_file=state_file,
-        )
-        await hass.async_add_executor_job(nexia_home.login)
-    except ConnectTimeout as ex:
+        await nexia_home.login()
+    except TimeoutError as ex:
         _LOGGER.error("Unable to connect to Nexia service: %s", ex)
         raise CannotConnect from ex
-    except HTTPError as http_ex:
+    except aiohttp.ClientResponseError as http_ex:
         _LOGGER.error("HTTP error from Nexia service: %s", http_ex)
-        if is_invalid_auth_code(http_ex.response.status_code):
+        if is_invalid_auth_code(http_ex.status):
             raise InvalidAuth from http_ex
         raise CannotConnect from http_ex
 
@@ -72,12 +83,16 @@ async def validate_input(hass: core.HomeAssistant, data):
     return info
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class NexiaConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Nexia."""
 
     VERSION = 1
+    MINOR_VERSION = 2
 
-    async def async_step_user(self, user_input=None):
+    @override
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         errors = {}
         if user_input is not None:
@@ -87,12 +102,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
+            except Exception:
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
 
             if "base" not in errors:
-                await self.async_set_unique_id(info["house_id"])
+                await self.async_set_unique_id(str(info["house_id"]))
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(title=info["title"], data=user_input)
 
@@ -100,10 +115,54 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user", data_schema=DATA_SCHEMA, errors=errors
         )
 
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle reauthentication."""
+        return await self.async_step_reauth_confirm()
 
-class CannotConnect(exceptions.HomeAssistantError):
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm reauthentication with a new password."""
+        errors = {}
+        reauth_entry = self._get_reauth_entry()
+
+        if user_input is not None:
+            try:
+                info = await validate_input(
+                    self.hass,
+                    {
+                        CONF_BRAND: reauth_entry.data.get(CONF_BRAND, BRAND_NEXIA),
+                        CONF_USERNAME: reauth_entry.data[CONF_USERNAME],
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                    },
+                )
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
+            else:
+                await self.async_set_unique_id(str(info["house_id"]))
+                self._abort_if_unique_id_mismatch(reason="wrong_account")
+                return self.async_update_reload_and_abort(
+                    reauth_entry, data_updates=user_input
+                )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=REAUTH_SCHEMA,
+            description_placeholders={CONF_USERNAME: reauth_entry.data[CONF_USERNAME]},
+            errors=errors,
+        )
+
+
+class CannotConnect(HomeAssistantError):
     """Error to indicate we cannot connect."""
 
 
-class InvalidAuth(exceptions.HomeAssistantError):
+class InvalidAuth(HomeAssistantError):
     """Error to indicate there is invalid auth."""
