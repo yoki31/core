@@ -1,70 +1,68 @@
 """Config flow for NFAndroidTV integration."""
-from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, override
 
 from notifications_android_tv.notifications import ConnectError, Notifications
-import voluptuous as vol
+import probatio
 
-from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_NAME
-from homeassistant.data_entry_flow import FlowResult
 
 from .const import DEFAULT_NAME, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class NFAndroidTVFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
+class NFAndroidTVFlowHandler(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for NFAndroidTV."""
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle a flow initiated by the user."""
         errors = {}
 
         if user_input is not None:
-            host = user_input[CONF_HOST]
-            name = user_input[CONF_NAME]
-
-            await self.async_set_unique_id(host)
-            self._abort_if_unique_id_configured()
-            error = await self._async_try_connect(host)
-            if error is None:
+            self._async_abort_entries_match({CONF_HOST: user_input[CONF_HOST]})
+            if not (error := await self._async_try_connect(user_input[CONF_HOST])):
                 return self.async_create_entry(
-                    title=name,
-                    data={CONF_HOST: host, CONF_NAME: name},
+                    title=f"{DEFAULT_NAME} ({user_input[CONF_HOST]})",
+                    data=user_input,
                 )
             errors["base"] = error
 
-        user_input = user_input or {}
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_HOST, default=user_input.get(CONF_HOST)): str,
-                    vol.Required(
-                        CONF_NAME, default=user_input.get(CONF_NAME, DEFAULT_NAME)
-                    ): str,
-                }
-            ),
+            data_schema=probatio.Schema({probatio.Required(CONF_HOST): str}),
             errors=errors,
         )
 
-    async def async_step_import(self, import_config: dict[str, Any]) -> FlowResult:
-        """Import a config entry from configuration.yaml."""
-        for entry in self._async_current_entries():
-            if entry.data[CONF_HOST] == import_config[CONF_HOST]:
-                _LOGGER.warning(
-                    "Already configured. This yaml configuration has already been imported. Please remove it"
-                )
-                return self.async_abort(reason="already_configured")
-        if CONF_NAME not in import_config:
-            import_config[CONF_NAME] = f"{DEFAULT_NAME} {import_config[CONF_HOST]}"
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle reconfigure flow for Notification for Android TV / Fire TV."""
+        errors: dict[str, str] = {}
+        entry = self._get_reconfigure_entry()
 
-        return await self.async_step_user(import_config)
+        if user_input is not None:
+            self._async_abort_entries_match(user_input)
+            if not (error := await self._async_try_connect(user_input[CONF_HOST])):
+                return self.async_update_reload_and_abort(
+                    entry, data_updates=user_input
+                )
+            errors["base"] = error
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=self.add_suggested_values_to_schema(
+                data_schema=probatio.Schema({probatio.Required(CONF_HOST): str}),
+                suggested_values=user_input or entry.data,
+            ),
+            description_placeholders={CONF_NAME: entry.title},
+            errors=errors,
+        )
 
     async def _async_try_connect(self, host: str) -> str | None:
         """Try connecting to Android TV / Fire TV."""
@@ -73,7 +71,7 @@ class NFAndroidTVFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         except ConnectError:
             _LOGGER.error("Error connecting to device at %s", host)
             return "cannot_connect"
-        except Exception:  # pylint: disable=broad-except
+        except Exception:
             _LOGGER.exception("Unexpected exception")
             return "unknown"
         return None

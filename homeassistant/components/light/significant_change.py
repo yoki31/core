@@ -1,18 +1,11 @@
 """Helper to test significant Light state changes."""
-from __future__ import annotations
 
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.significant_change import check_absolute_change
 
-from . import (
-    ATTR_BRIGHTNESS,
-    ATTR_COLOR_TEMP,
-    ATTR_EFFECT,
-    ATTR_HS_COLOR,
-    ATTR_WHITE_VALUE,
-)
+from .const import LightEntityStateAttribute
 
 
 @callback
@@ -28,11 +21,13 @@ def async_check_significant_change(
     if old_state != new_state:
         return True
 
-    if old_attrs.get(ATTR_EFFECT) != new_attrs.get(ATTR_EFFECT):
+    if old_attrs.get(LightEntityStateAttribute.EFFECT) != new_attrs.get(
+        LightEntityStateAttribute.EFFECT
+    ):
         return True
 
-    old_color = old_attrs.get(ATTR_HS_COLOR)
-    new_color = new_attrs.get(ATTR_HS_COLOR)
+    old_color = old_attrs.get(LightEntityStateAttribute.HS_COLOR)
+    new_color = new_attrs.get(LightEntityStateAttribute.HS_COLOR)
 
     if old_color and new_color:
         # Range 0..360
@@ -44,23 +39,17 @@ def async_check_significant_change(
             return True
 
     if check_absolute_change(
-        old_attrs.get(ATTR_BRIGHTNESS), new_attrs.get(ATTR_BRIGHTNESS), 3
+        old_attrs.get(LightEntityStateAttribute.BRIGHTNESS),
+        new_attrs.get(LightEntityStateAttribute.BRIGHTNESS),
+        3,
     ):
         return True
 
     if check_absolute_change(
-        # Default range 153..500
-        old_attrs.get(ATTR_COLOR_TEMP),
-        new_attrs.get(ATTR_COLOR_TEMP),
-        5,
-    ):
-        return True
-
-    if check_absolute_change(
-        # Range 0..255
-        old_attrs.get(ATTR_WHITE_VALUE),
-        new_attrs.get(ATTR_WHITE_VALUE),
-        5,
+        # Default range 2000..6500
+        old_attrs.get(LightEntityStateAttribute.COLOR_TEMP_KELVIN),
+        new_attrs.get(LightEntityStateAttribute.COLOR_TEMP_KELVIN),
+        50,
     ):
         return True
 

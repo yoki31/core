@@ -1,12 +1,10 @@
 {
   "domain": "lyric",
   "name": "Honeywell Lyric",
-  "config_flow": true,
-  "documentation": "https://www.home-assistant.io/integrations/lyric",
-  "dependencies": ["http"],
-  "requirements": ["aiolyric==1.0.8"],
+  "categories": ["climate.thermostats_heating"],
   "codeowners": ["@timmo001"],
-  "quality_scale": "silver",
+  "config_flow": true,
+  "dependencies": ["application_credentials"],
   "dhcp": [
     {
       "hostname": "lyric-*",
@@ -21,6 +19,9 @@
       "macaddress": "00D02D*"
     }
   ],
+  "documentation": "https://www.home-assistant.io/integrations/lyric",
+  "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "loggers": ["aiolyric"]
+  "loggers": ["aiolyric"],
+  "requirements": ["aiolyric==2.2.1"]
 }

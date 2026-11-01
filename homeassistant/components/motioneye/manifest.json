@@ -1,19 +1,14 @@
 {
   "domain": "motioneye",
   "name": "motionEye",
-  "documentation": "https://www.home-assistant.io/integrations/motioneye",
+  "after_dependencies": ["media_source"],
+  "categories": ["security_safety.cameras"],
+  "codeowners": ["@dermotduffy"],
   "config_flow": true,
-  "dependencies": [
-    "http",
-    "media_source",
-    "webhook"
-  ],
-  "requirements": [
-    "motioneye-client==0.3.12"
-  ],
-  "codeowners": [
-    "@dermotduffy"
-  ],
+  "dependencies": ["http", "webhook"],
+  "documentation": "https://www.home-assistant.io/integrations/motioneye",
+  "integration_type": "hub",
   "iot_class": "local_polling",
-  "loggers": ["motioneye_client"]
+  "loggers": ["motioneye_client"],
+  "requirements": ["motioneye-client==0.4.1"]
 }

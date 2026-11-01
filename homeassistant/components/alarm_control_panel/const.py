@@ -1,13 +1,64 @@
 """Provides the constants needed for component."""
 
-from typing import Final
+from enum import IntFlag, StrEnum
+from typing import TYPE_CHECKING, Final
 
-SUPPORT_ALARM_ARM_HOME: Final = 1
-SUPPORT_ALARM_ARM_AWAY: Final = 2
-SUPPORT_ALARM_ARM_NIGHT: Final = 4
-SUPPORT_ALARM_TRIGGER: Final = 8
-SUPPORT_ALARM_ARM_CUSTOM_BYPASS: Final = 16
-SUPPORT_ALARM_ARM_VACATION: Final = 32
+from homeassistant.util.hass_dict import HassKey
+
+if TYPE_CHECKING:
+    from homeassistant.helpers.entity_component import EntityComponent
+
+    from .entity import AlarmControlPanelEntity
+
+DOMAIN: Final = "alarm_control_panel"
+DATA_COMPONENT: HassKey[EntityComponent[AlarmControlPanelEntity]] = HassKey(DOMAIN)
+
+ATTR_CHANGED_BY: Final = "changed_by"
+ATTR_CODE_ARM_REQUIRED: Final = "code_arm_required"
+
+CONF_DEFAULT_CODE = "default_code"
+
+
+class AlarmControlPanelEntityStateAttribute(StrEnum):
+    """State attributes for alarm control panel entities."""
+
+    CODE_FORMAT = "code_format"
+    CHANGED_BY = "changed_by"
+    CODE_ARM_REQUIRED = "code_arm_required"
+
+
+class AlarmControlPanelState(StrEnum):
+    """Alarm control panel entity states."""
+
+    DISARMED = "disarmed"
+    ARMED_HOME = "armed_home"
+    ARMED_AWAY = "armed_away"
+    ARMED_NIGHT = "armed_night"
+    ARMED_VACATION = "armed_vacation"
+    ARMED_CUSTOM_BYPASS = "armed_custom_bypass"
+    PENDING = "pending"
+    ARMING = "arming"
+    DISARMING = "disarming"
+    TRIGGERED = "triggered"
+
+
+class CodeFormat(StrEnum):
+    """Code formats for the Alarm Control Panel."""
+
+    TEXT = "text"
+    NUMBER = "number"
+
+
+class AlarmControlPanelEntityFeature(IntFlag):
+    """Supported features of the alarm control panel entity."""
+
+    ARM_HOME = 1
+    ARM_AWAY = 2
+    ARM_NIGHT = 4
+    TRIGGER = 8
+    ARM_CUSTOM_BYPASS = 16
+    ARM_VACATION = 32
+
 
 CONDITION_TRIGGERED: Final = "is_triggered"
 CONDITION_DISARMED: Final = "is_disarmed"
@@ -16,3 +67,21 @@ CONDITION_ARMED_AWAY: Final = "is_armed_away"
 CONDITION_ARMED_NIGHT: Final = "is_armed_night"
 CONDITION_ARMED_VACATION: Final = "is_armed_vacation"
 CONDITION_ARMED_CUSTOM_BYPASS: Final = "is_armed_custom_bypass"
+
+
+class AlarmControlPanelService(StrEnum):
+    """Store keys for alarm control panel services."""
+
+    ARM_AWAY = "alarm_arm_away"
+    ARM_CUSTOM_BYPASS = "alarm_arm_custom_bypass"
+    ARM_HOME = "alarm_arm_home"
+    ARM_NIGHT = "alarm_arm_night"
+    ARM_VACATION = "alarm_arm_vacation"
+    DISARM = "alarm_disarm"
+    TRIGGER = "alarm_trigger"
+
+
+class AlarmControlPanelServiceArgument(StrEnum):
+    """Store keys for alarm control panel service arguments."""
+
+    CODE = "code"

@@ -1,9 +1,12 @@
 {
   "domain": "tautulli",
   "name": "Tautulli",
+  "categories": ["media_entertainment.tv_streaming"],
+  "codeowners": ["@ludeeus", "@tkdrob"],
+  "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/tautulli",
-  "requirements": ["pytautulli==21.11.0"],
-  "codeowners": ["@ludeeus"],
+  "integration_type": "hub",
   "iot_class": "local_polling",
-  "loggers": ["pytautulli"]
+  "loggers": ["pytautulli"],
+  "requirements": ["pytautulli==23.1.1"]
 }

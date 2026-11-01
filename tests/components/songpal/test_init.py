@@ -1,7 +1,11 @@
 """Tests songpal setup."""
+
 from unittest.mock import patch
 
+from pytest_homeassistant.common import MockConfigEntry
+
 from homeassistant.components import songpal
+from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
 from . import (
@@ -10,8 +14,6 @@ from . import (
     _patch_config_flow_device,
     _patch_media_player_device,
 )
-
-from tests.common import MockConfigEntry
 
 
 def _patch_media_setup():
@@ -26,7 +28,7 @@ def _patch_media_setup():
     )
 
 
-async def test_setup_empty(hass):
+async def test_setup_empty(hass: HomeAssistant) -> None:
     """Test setup without any configuration."""
     with _patch_media_setup() as setup:
         assert await async_setup_component(hass, songpal.DOMAIN, {}) is True
@@ -34,7 +36,7 @@ async def test_setup_empty(hass):
     setup.assert_not_called()
 
 
-async def test_setup(hass):
+async def test_setup(hass: HomeAssistant) -> None:
     """Test setup the platform."""
     mocked_device = _create_mocked_device()
 
@@ -50,18 +52,19 @@ async def test_setup(hass):
     setup.assert_called_once()
 
 
-async def test_unload(hass):
+async def test_unload(hass: HomeAssistant) -> None:
     """Test unload entity."""
     entry = MockConfigEntry(domain=songpal.DOMAIN, data=CONF_DATA)
     entry.add_to_hass(hass)
     mocked_device = _create_mocked_device()
 
-    with _patch_config_flow_device(mocked_device), _patch_media_player_device(
-        mocked_device
+    with (
+        _patch_config_flow_device(mocked_device),
+        _patch_media_player_device(mocked_device),
     ):
         assert await async_setup_component(hass, songpal.DOMAIN, {}) is True
         await hass.async_block_till_done()
     mocked_device.listen_notifications.assert_called_once()
-    assert await songpal.async_unload_entry(hass, entry)
+    assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
     mocked_device.stop_listen_notifications.assert_called_once()

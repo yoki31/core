@@ -2,38 +2,48 @@
 
 from datetime import timedelta
 
-from homeassistant.components.upnp.const import (
-    DOMAIN,
-    ROUTER_IP,
-    ROUTER_UPTIME,
-    WAN_STATUS,
-)
+from async_upnp_client.profiles.igd import IgdDevice, IgdState
+from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
+
+from homeassistant.components.upnp.const import DEFAULT_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
-import homeassistant.util.dt as dt_util
-
-from .conftest import MockIgdDevice
-
-from tests.common import MockConfigEntry, async_fire_time_changed
+from homeassistant.util import dt as dt_util
 
 
 async def test_upnp_binary_sensors(
-    hass: HomeAssistant, setup_integration: MockConfigEntry
-):
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
     """Test normal sensors."""
     # First poll.
     wan_status_state = hass.states.get("binary_sensor.mock_name_wan_status")
     assert wan_status_state.state == "on"
 
     # Second poll.
-    mock_device: MockIgdDevice = hass.data[DOMAIN][
-        setup_integration.entry_id
-    ].device._igd_device
-    mock_device.status_data = {
-        WAN_STATUS: "Disconnected",
-        ROUTER_UPTIME: 100,
-        ROUTER_IP: "",
-    }
-    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=31))
+    mock_igd_device: IgdDevice = mock_config_entry.igd_device
+    mock_igd_device.async_get_traffic_and_status_data.return_value = IgdState(
+        timestamp=dt_util.naive_now(),
+        bytes_received=0,
+        bytes_sent=0,
+        packets_received=0,
+        packets_sent=0,
+        connection_status="Disconnected",
+        last_connection_error="",
+        uptime=40,
+        external_ip_address="8.9.10.11",
+        kibibytes_per_sec_received=None,
+        kibibytes_per_sec_sent=None,
+        packets_per_sec_received=None,
+        packets_per_sec_sent=None,
+        kibibytes_per_sec_received_no_rollover=None,
+        kibibytes_per_sec_sent_no_rollover=None,
+        packets_per_sec_received_no_rollover=None,
+        packets_per_sec_sent_no_rollover=None,
+        port_mapping_number_of_entries=0,
+    )
+
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=DEFAULT_SCAN_INTERVAL)
+    )
     await hass.async_block_till_done()
 
     wan_status_state = hass.states.get("binary_sensor.mock_name_wan_status")

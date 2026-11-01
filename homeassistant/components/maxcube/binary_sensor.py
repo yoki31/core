@@ -1,12 +1,13 @@
 """Support for MAX! binary sensors via MAX! Cube."""
-from __future__ import annotations
+
+from typing import override
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
@@ -28,8 +29,7 @@ def setup_platform(
             if device.is_windowshutter():
                 devices.append(MaxCubeShutter(handler, device))
 
-    if devices:
-        add_entities(devices)
+    add_entities(devices)
 
 
 class MaxCubeBinarySensorBase(BinarySensorEntity):
@@ -43,7 +43,7 @@ class MaxCubeBinarySensorBase(BinarySensorEntity):
         self._device = device
         self._room = handler.cube.room_by_id(device.room_id)
 
-    def update(self):
+    def update(self) -> None:
         """Get latest data from MAX! Cube."""
         self._cubehandle.update()
 
@@ -61,7 +61,8 @@ class MaxCubeShutter(MaxCubeBinarySensorBase):
         self._attr_unique_id = self._device.serial
 
     @property
-    def is_on(self):
+    @override
+    def is_on(self) -> bool:
         """Return true if the binary sensor is on/open."""
         return self._device.is_open
 
@@ -79,6 +80,7 @@ class MaxCubeBattery(MaxCubeBinarySensorBase):
         self._attr_unique_id = f"{self._device.serial}_battery"
 
     @property
-    def is_on(self):
+    @override
+    def is_on(self) -> bool:
         """Return true if the binary sensor is on/open."""
         return self._device.battery == 1

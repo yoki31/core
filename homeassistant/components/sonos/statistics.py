@@ -1,7 +1,7 @@
 """Class to track subscription event statistics."""
-from __future__ import annotations
 
 import logging
+from typing import override
 
 from soco.data_structures_entry import from_didl_string
 from soco.events_base import Event as SonosEvent, parse_event_xml
@@ -14,7 +14,7 @@ class SonosStatistics:
 
     def __init__(self, zone_name: str, kind: str) -> None:
         """Initialize SonosStatistics."""
-        self._stats = {}
+        self._stats: dict[str, dict[str, int | float]] = {}
         self._stat_type = kind
         self.zone_name = zone_name
 
@@ -68,6 +68,7 @@ class EventStatistics(SonosStatistics):
         """Mark a fully processed event by subscription type."""
         self._stats[event.service.service_type]["processed"] += 1
 
+    @override
     def report(self) -> dict:
         """Generate a report for use in diagnostics."""
         payload = self._stats.copy()

@@ -2,8 +2,6 @@
 
 DOMAIN = "xiaomi_aqara"
 
-GATEWAYS_KEY = "gateways"
-LISTENER_KEY = "listener"
 
 ZEROCONF_GATEWAY = "lumi-gateway"
 ZEROCONF_ACPARTNER = "lumi-acpartner"

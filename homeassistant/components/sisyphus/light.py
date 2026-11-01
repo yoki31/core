@@ -1,11 +1,11 @@
 """Support for the light on the Sisyphus Kinetic Art Table."""
-from __future__ import annotations
 
 import logging
+from typing import Any, override
 
 import aiohttp
 
-from homeassistant.components.light import SUPPORT_BRIGHTNESS, LightEntity
+from homeassistant.components.light import ColorMode, LightEntity
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import PlatformNotReady
@@ -15,8 +15,6 @@ from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from . import DATA_SISYPHUS
 
 _LOGGER = logging.getLogger(__name__)
-
-SUPPORTED_FEATURES = SUPPORT_BRIGHTNESS
 
 
 async def async_setup_platform(
@@ -33,7 +31,7 @@ async def async_setup_platform(
         table_holder = hass.data[DATA_SISYPHUS][host]
         table = await table_holder.get_table()
     except aiohttp.ClientError as err:
-        raise PlatformNotReady() from err
+        raise PlatformNotReady from err
 
     add_entities([SisyphusLight(table_holder.name, table)], update_before_add=True)
 
@@ -41,59 +39,65 @@ async def async_setup_platform(
 class SisyphusLight(LightEntity):
     """Representation of a Sisyphus table as a light."""
 
+    _attr_color_mode = ColorMode.BRIGHTNESS
+    _attr_supported_color_modes = {ColorMode.BRIGHTNESS}
+
     def __init__(self, name, table):
         """Initialize the Sisyphus table."""
         self._name = name
         self._table = table
 
-    async def async_added_to_hass(self):
+    @override
+    async def async_added_to_hass(self) -> None:
         """Add listeners after this object has been initialized."""
         self._table.add_listener(self.async_write_ha_state)
 
-    async def async_update(self):
+    async def async_update(self) -> None:
         """Force update the table state."""
         await self._table.refresh()
 
     @property
-    def available(self):
+    @override
+    def available(self) -> bool:
         """Return true if the table is responding to heartbeats."""
         return self._table.is_connected
 
     @property
+    @override
     def unique_id(self):
         """Return the UUID of the table."""
         return self._table.id
 
     @property
+    @override
     def name(self):
         """Return the ame of the table."""
         return self._name
 
     @property
-    def is_on(self):
+    @override
+    def is_on(self) -> bool:
         """Return True if the table is on."""
         return not self._table.is_sleeping
 
     @property
-    def brightness(self):
+    @override
+    def brightness(self) -> int:
         """Return the current brightness of the table's ring light."""
         return self._table.brightness * 255
 
-    @property
-    def supported_features(self):
-        """Return the features supported by the table; i.e. brightness."""
-        return SUPPORTED_FEATURES
-
-    async def async_turn_off(self, **kwargs):
+    @override
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Put the table to sleep."""
         await self._table.sleep()
-        _LOGGER.debug("Sisyphus table %s: sleep")
+        _LOGGER.debug("Sisyphus table %s: sleep", self._name)
 
-    async def async_turn_on(self, **kwargs):
+    @override
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Wake up the table if necessary, optionally changes brightness."""
         if not self.is_on:
             await self._table.wakeup()
-            _LOGGER.debug("Sisyphus table %s: wakeup")
+            _LOGGER.debug("Sisyphus table %s: wakeup", self._name)
 
         if "brightness" in kwargs:
             await self._table.set_brightness(kwargs["brightness"] / 255.0)

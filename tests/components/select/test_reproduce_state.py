@@ -1,16 +1,12 @@
 """Test reproduce state for select entities."""
+
 import pytest
+from pytest_homeassistant.common import async_mock_service
 
-from homeassistant.components.select.const import (
-    ATTR_OPTION,
-    ATTR_OPTIONS,
-    DOMAIN,
-    SERVICE_SELECT_OPTION,
-)
-from homeassistant.const import ATTR_ENTITY_ID
+from homeassistant.components.select.const import ATTR_OPTIONS, DOMAIN
+from homeassistant.const import ATTR_ENTITY_ID, ATTR_OPTION, SERVICE_SELECT_OPTION
 from homeassistant.core import HomeAssistant, State
-
-from tests.common import async_mock_service
+from homeassistant.helpers.state import async_reproduce_state
 
 
 async def test_reproducing_states(
@@ -24,7 +20,8 @@ async def test_reproducing_states(
         {ATTR_OPTIONS: ["option_one", "option_two", "option_three"]},
     )
 
-    await hass.helpers.state.async_reproduce_state(
+    await async_reproduce_state(
+        hass,
         [
             State("select.test", "option_two"),
         ],
@@ -35,7 +32,8 @@ async def test_reproducing_states(
     assert calls[0].data == {ATTR_ENTITY_ID: "select.test", ATTR_OPTION: "option_two"}
 
     # Calling it again should not do anything
-    await hass.helpers.state.async_reproduce_state(
+    await async_reproduce_state(
+        hass,
         [
             State("select.test", "option_one"),
         ],
@@ -43,15 +41,11 @@ async def test_reproducing_states(
     assert len(calls) == 1
 
     # Restoring an invalid state should not work either
-    await hass.helpers.state.async_reproduce_state(
-        [State("select.test", "option_four")]
-    )
+    await async_reproduce_state(hass, [State("select.test", "option_four")])
     assert len(calls) == 1
     assert "Invalid state specified" in caplog.text
 
     # Restoring an state for an invalid entity ID logs a warning
-    await hass.helpers.state.async_reproduce_state(
-        [State("select.non_existing", "option_three")]
-    )
+    await async_reproduce_state(hass, [State("select.non_existing", "option_three")])
     assert len(calls) == 1
     assert "Unable to find entity" in caplog.text

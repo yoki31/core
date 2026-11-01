@@ -1,19 +1,25 @@
 """Support for Sesame, by CANDY HOUSE."""
-from __future__ import annotations
 
+from typing import Any, override
+
+import probatio
 import pysesame2
-import voluptuous as vol
 
-from homeassistant.components.lock import PLATFORM_SCHEMA, LockEntity
+from homeassistant.components.lock import (
+    PLATFORM_SCHEMA as LOCK_PLATFORM_SCHEMA,
+    LockEntity,
+)
 from homeassistant.const import ATTR_BATTERY_LEVEL, ATTR_DEVICE_ID, CONF_API_KEY
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 ATTR_SERIAL_NO = "serial"
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({vol.Required(CONF_API_KEY): cv.string})
+PLATFORM_SCHEMA = LOCK_PLATFORM_SCHEMA.extend(
+    {probatio.Required(probatio.Secret(CONF_API_KEY)): cv.string}
+)
 
 
 def setup_platform(
@@ -47,25 +53,30 @@ class SesameDevice(LockEntity):
         self._battery = -1
 
     @property
+    @override
     def name(self) -> str | None:
         """Return the name of the device."""
         return self._nickname
 
     @property
+    @override
     def available(self) -> bool:
         """Return True if entity is available."""
         return self._responsive
 
     @property
+    @override
     def is_locked(self) -> bool:
         """Return True if the device is currently locked, else False."""
         return self._is_locked
 
-    def lock(self, **kwargs) -> None:
+    @override
+    def lock(self, **kwargs: Any) -> None:
         """Lock the device."""
         self._sesame.lock()
 
-    def unlock(self, **kwargs) -> None:
+    @override
+    def unlock(self, **kwargs: Any) -> None:
         """Unlock the device."""
         self._sesame.unlock()
 
@@ -80,7 +91,8 @@ class SesameDevice(LockEntity):
         self._responsive = status["responsive"]
 
     @property
-    def extra_state_attributes(self) -> dict:
+    @override
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes."""
         return {
             ATTR_DEVICE_ID: self._device_id,

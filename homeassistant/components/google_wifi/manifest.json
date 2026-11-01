@@ -1,7 +1,10 @@
 {
   "domain": "google_wifi",
   "name": "Google Wifi",
+  "categories": ["computers_network.routers_network"],
+  "codeowners": ["@EReaso"],
   "documentation": "https://www.home-assistant.io/integrations/google_wifi",
-  "codeowners": [],
-  "iot_class": "local_polling"
+  "iot_class": "local_polling",
+  "quality_scale": "legacy",
+  "requirements": ["googlewifiapi==0.1.2"]
 }

@@ -1,125 +1,62 @@
 """Implementation of the musiccast media player."""
-from __future__ import annotations
 
+import contextlib
 import logging
+from typing import Any, override
 
 from aiomusiccast import MusicCastGroupException, MusicCastMediaContent
 from aiomusiccast.features import ZoneFeature
-import voluptuous as vol
 
+from homeassistant.components import media_source
 from homeassistant.components.media_player import (
-    PLATFORM_SCHEMA,
+    BrowseError,
     BrowseMedia,
+    MediaClass,
     MediaPlayerEntity,
-)
-from homeassistant.components.media_player.const import (
-    MEDIA_CLASS_DIRECTORY,
-    MEDIA_CLASS_TRACK,
-    MEDIA_TYPE_MUSIC,
-    REPEAT_MODE_OFF,
-    SUPPORT_BROWSE_MEDIA,
-    SUPPORT_GROUPING,
-    SUPPORT_NEXT_TRACK,
-    SUPPORT_PAUSE,
-    SUPPORT_PLAY,
-    SUPPORT_PLAY_MEDIA,
-    SUPPORT_PREVIOUS_TRACK,
-    SUPPORT_REPEAT_SET,
-    SUPPORT_SELECT_SOUND_MODE,
-    SUPPORT_SELECT_SOURCE,
-    SUPPORT_SHUFFLE_SET,
-    SUPPORT_STOP,
-    SUPPORT_TURN_OFF,
-    SUPPORT_TURN_ON,
-    SUPPORT_VOLUME_MUTE,
-    SUPPORT_VOLUME_SET,
-    SUPPORT_VOLUME_STEP,
-)
-from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
-from homeassistant.const import (
-    CONF_HOST,
-    CONF_PORT,
-    STATE_IDLE,
-    STATE_OFF,
-    STATE_PAUSED,
-    STATE_PLAYING,
+    MediaPlayerEntityFeature,
+    MediaPlayerState,
+    MediaType,
+    RepeatMode,
+    async_process_play_media_url,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity import Entity
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from homeassistant.util import uuid
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import uuid as uuid_util
 
-from . import MusicCastDataUpdateCoordinator, MusicCastDeviceEntity
 from .const import (
     ATTR_MAIN_SYNC,
     ATTR_MC_LINK,
     DEFAULT_ZONE,
     DOMAIN,
     HA_REPEAT_MODE_TO_MC_MAPPING,
-    INTERVAL_SECONDS,
     MC_REPEAT_MODE_TO_HA_MAPPING,
     MEDIA_CLASS_MAPPING,
     NULL_GROUP,
 )
+from .coordinator import MusicCastConfigEntry
+from .entity import MusicCastDeviceEntity
 
 _LOGGER = logging.getLogger(__name__)
 
 MUSIC_PLAYER_BASE_SUPPORT = (
-    SUPPORT_SHUFFLE_SET
-    | SUPPORT_REPEAT_SET
-    | SUPPORT_SELECT_SOUND_MODE
-    | SUPPORT_SELECT_SOURCE
-    | SUPPORT_GROUPING
-    | SUPPORT_PLAY_MEDIA
+    MediaPlayerEntityFeature.SHUFFLE_SET
+    | MediaPlayerEntityFeature.REPEAT_SET
+    | MediaPlayerEntityFeature.SELECT_SOUND_MODE
+    | MediaPlayerEntityFeature.SELECT_SOURCE
+    | MediaPlayerEntityFeature.GROUPING
+    | MediaPlayerEntityFeature.PLAY_MEDIA
 )
-
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Optional(CONF_PORT, default=5000): cv.port,
-        vol.Optional(INTERVAL_SECONDS, default=0): cv.positive_int,
-    }
-)
-
-
-async def async_setup_platform(
-    hass: HomeAssistant,
-    config: ConfigType,
-    async_add_devices: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None,
-) -> None:
-    """Import legacy configurations."""
-
-    if hass.config_entries.async_entries(DOMAIN) and config[CONF_HOST] not in [
-        entry.data[CONF_HOST] for entry in hass.config_entries.async_entries(DOMAIN)
-    ]:
-        _LOGGER.error(
-            "Configuration in configuration.yaml is not supported anymore. "
-            "Please add this device using the config flow: %s",
-            config[CONF_HOST],
-        )
-    else:
-        _LOGGER.warning(
-            "Configuration in configuration.yaml is deprecated. Use the config flow instead"
-        )
-
-        hass.async_create_task(
-            hass.config_entries.flow.async_init(
-                DOMAIN, context={"source": SOURCE_IMPORT}, data=config
-            )
-        )
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: MusicCastConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up MusicCast sensor based on a config entry."""
-    coordinator: MusicCastDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
 
     name = coordinator.data.network_name
 
@@ -138,9 +75,12 @@ async def async_setup_entry(
 class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
     """The musiccast media player."""
 
+    _attr_media_content_type = MediaType.MUSIC
+    _attr_translation_key = "zone"
+
     def __init__(self, zone_id, name, entry_id, coordinator):
         """Initialize the musiccast device."""
-        self._player_state = STATE_PLAYING
+        self._player_state = MediaPlayerState.PLAYING
         self._volume_muted = False
         self._shuffle = False
         self._zone_id = zone_id
@@ -155,9 +95,10 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         self._volume_max = self.coordinator.data.zones[self._zone_id].max_volume
 
         self._cur_track = 0
-        self._repeat = REPEAT_MODE_OFF
+        self._repeat = RepeatMode.OFF
 
-    async def async_added_to_hass(self):
+    @override
+    async def async_added_to_hass(self) -> None:
         """Run when this Entity has been added to HA."""
         await super().async_added_to_hass()
         self.coordinator.entities.append(self)
@@ -165,9 +106,12 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         self.coordinator.musiccast.register_group_update_callback(
             self.update_all_mc_entities
         )
-        self.coordinator.async_add_listener(self.async_schedule_check_client_list)
+        self.async_on_remove(
+            self.coordinator.async_add_listener(self.async_schedule_check_client_list)
+        )
 
-    async def async_will_remove_from_hass(self):
+    @override
+    async def async_will_remove_from_hass(self) -> None:
         """Entity being removed from hass."""
         await super().async_will_remove_from_hass()
         self.coordinator.entities.remove(self)
@@ -175,12 +119,6 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         self.coordinator.musiccast.remove_group_update_callback(
             self.update_all_mc_entities
         )
-        self.coordinator.async_remove_listener(self.async_schedule_check_client_list)
-
-    @property
-    def should_poll(self):
-        """Push an update after each command."""
-        return False
 
     @property
     def ip_address(self):
@@ -194,37 +132,53 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
 
     @property
     def _is_netusb(self):
-        return (
-            self.coordinator.data.netusb_input
-            == self.coordinator.data.zones[self._zone_id].input
-        )
+        return self.coordinator.data.netusb_input == self.source_id
 
     @property
     def _is_tuner(self):
-        return self.coordinator.data.zones[self._zone_id].input == "tuner"
+        return self.source_id == "tuner"
 
     @property
+    @override
     def media_content_id(self):
         """Return the content ID of current playing media."""
         return None
 
     @property
-    def media_content_type(self):
-        """Return the content type of current playing media."""
-        return MEDIA_TYPE_MUSIC
-
-    @property
-    def state(self):
+    @override
+    def state(self) -> MediaPlayerState:
         """Return the state of the player."""
         if self.coordinator.data.zones[self._zone_id].power == "on":
             if self._is_netusb and self.coordinator.data.netusb_playback == "pause":
-                return STATE_PAUSED
+                return MediaPlayerState.PAUSED
             if self._is_netusb and self.coordinator.data.netusb_playback == "stop":
-                return STATE_IDLE
-            return STATE_PLAYING
-        return STATE_OFF
+                return MediaPlayerState.IDLE
+            return MediaPlayerState.PLAYING
+        return MediaPlayerState.OFF
 
     @property
+    def source_mapping(self):
+        """Return a mapping of source names to MusicCast App labels."""
+        ret = {}
+        for inp in self.coordinator.data.zones[self._zone_id].input_list:
+            label = self.coordinator.data.input_names.get(inp, "")
+            if inp != label and (
+                label in self.coordinator.data.zones[self._zone_id].input_list
+                or list(self.coordinator.data.input_names.values()).count(label) > 1
+            ):
+                label += f" ({inp})"
+            if label == "":
+                label = inp
+            ret[inp] = label
+        return ret
+
+    @property
+    def reverse_source_mapping(self):
+        """Return a mapping from the source label to the source name."""
+        return {v: k for k, v in self.source_mapping.items()}
+
+    @property
+    @override
     def volume_level(self):
         """Return the volume level of the media player (0..1)."""
         if ZoneFeature.VOLUME in self.coordinator.data.zones[self._zone_id].features:
@@ -233,6 +187,7 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         return None
 
     @property
+    @override
     def is_volume_muted(self):
         """Return boolean if volume is currently muted."""
         if ZoneFeature.VOLUME in self.coordinator.data.zones[self._zone_id].features:
@@ -240,6 +195,7 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         return None
 
     @property
+    @override
     def shuffle(self):
         """Boolean if shuffling is enabled."""
         return (
@@ -247,11 +203,13 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         )
 
     @property
+    @override
     def sound_mode(self):
         """Return the current sound mode."""
         return self.coordinator.data.zones[self._zone_id].sound_program
 
     @property
+    @override
     def sound_mode_list(self):
         """Return a list of available sound modes."""
         return self.coordinator.data.zones[self._zone_id].sound_program_list
@@ -262,40 +220,48 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         return self._zone_id
 
     @property
+    @override
     def unique_id(self) -> str:
         """Return the unique ID for this media_player."""
         return f"{self.coordinator.data.device_id}_{self._zone_id}"
 
-    async def async_turn_on(self):
+    @override
+    async def async_turn_on(self) -> None:
         """Turn the media player on."""
         await self.coordinator.musiccast.turn_on(self._zone_id)
         self.async_write_ha_state()
 
-    async def async_turn_off(self):
+    @override
+    async def async_turn_off(self) -> None:
         """Turn the media player off."""
         await self.coordinator.musiccast.turn_off(self._zone_id)
         self.async_write_ha_state()
 
-    async def async_mute_volume(self, mute):
+    @override
+    async def async_mute_volume(self, mute: bool) -> None:
         """Mute the volume."""
 
         await self.coordinator.musiccast.mute_volume(self._zone_id, mute)
         self.async_write_ha_state()
 
-    async def async_set_volume_level(self, volume):
+    @override
+    async def async_set_volume_level(self, volume: float) -> None:
         """Set the volume level, range 0..1."""
         await self.coordinator.musiccast.set_volume_level(self._zone_id, volume)
         self.async_write_ha_state()
 
-    async def async_volume_up(self):
+    @override
+    async def async_volume_up(self) -> None:
         """Turn volume up for media player."""
         await self.coordinator.musiccast.volume_up(self._zone_id)
 
-    async def async_volume_down(self):
+    @override
+    async def async_volume_down(self) -> None:
         """Turn volume down for media player."""
         await self.coordinator.musiccast.volume_down(self._zone_id)
 
-    async def async_media_play(self):
+    @override
+    async def async_media_play(self) -> None:
         """Send play command."""
         if self._is_netusb:
             await self.coordinator.musiccast.netusb_play()
@@ -304,7 +270,8 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
                 "Service play is not supported for non NetUSB sources."
             )
 
-    async def async_media_pause(self):
+    @override
+    async def async_media_pause(self) -> None:
         """Send pause command."""
         if self._is_netusb:
             await self.coordinator.musiccast.netusb_pause()
@@ -313,7 +280,8 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
                 "Service pause is not supported for non NetUSB sources."
             )
 
-    async def async_media_stop(self):
+    @override
+    async def async_media_stop(self) -> None:
         """Send stop command."""
         if self._is_netusb:
             await self.coordinator.musiccast.netusb_stop()
@@ -322,7 +290,8 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
                 "Service stop is not supported for non NetUSB sources."
             )
 
-    async def async_set_shuffle(self, shuffle):
+    @override
+    async def async_set_shuffle(self, shuffle: bool) -> None:
         """Enable/disable shuffle mode."""
         if self._is_netusb:
             await self.coordinator.musiccast.netusb_shuffle(shuffle)
@@ -331,9 +300,18 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
                 "Service shuffle is not supported for non NetUSB sources."
             )
 
-    async def async_play_media(self, media_type: str, media_id: str, **kwargs) -> None:
+    @override
+    async def async_play_media(
+        self, media_type: MediaType | str, media_id: str, **kwargs: Any
+    ) -> None:
         """Play media."""
-        if self.state == STATE_OFF:
+        if media_source.is_media_source_id(media_id):
+            play_item = await media_source.async_resolve_media(
+                self.hass, media_id, self.entity_id
+            )
+            media_id = play_item.url
+
+        if self.state == MediaPlayerState.OFF:
             await self.async_turn_on()
 
         if media_id:
@@ -353,7 +331,9 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
                 )
                 return
 
-            if parts[0] == "http":
+            if parts[0] in ("http", "https") or media_id.startswith("/"):
+                media_id = async_process_play_media_url(self.hass, media_id)
+
                 await self.coordinator.musiccast.play_url_media(
                     self._zone_id, media_id, "HomeAssistant"
                 )
@@ -363,9 +343,19 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
             "Only presets, media from media browser and http URLs are supported"
         )
 
+    @override
     async def async_browse_media(self, media_content_type=None, media_content_id=None):
         """Implement the websocket media browsing helper."""
-        if self.state == STATE_OFF:
+        if media_content_id and media_source.is_media_source_id(media_content_id):
+            return await media_source.async_browse_media(
+                self.hass,
+                media_content_id,
+                content_filter=lambda item: item.media_content_type.startswith(
+                    "audio/"
+                ),
+            )
+
+        if self.state == MediaPlayerState.OFF:
             raise HomeAssistantError(
                 "The device has to be turned on to be able to browse media."
             )
@@ -375,16 +365,18 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
             media_content_provider = await MusicCastMediaContent.browse_media(
                 self.coordinator.musiccast, self._zone_id, media_content_path, 24
             )
+            add_media_source = False
 
         else:
             media_content_provider = MusicCastMediaContent.categories(
                 self.coordinator.musiccast, self._zone_id
             )
+            add_media_source = True
 
         def get_content_type(item):
             if item.can_play:
-                return MEDIA_CLASS_TRACK
-            return MEDIA_CLASS_DIRECTORY
+                return MediaClass.TRACK
+            return MediaClass.DIRECTORY
 
         children = [
             BrowseMedia(
@@ -399,7 +391,23 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
             for child in media_content_provider.children
         ]
 
-        overview = BrowseMedia(
+        if add_media_source:
+            # pylint: disable-next=home-assistant-action-swallowed-exception
+            with contextlib.suppress(BrowseError):
+                item = await media_source.async_browse_media(
+                    self.hass,
+                    None,
+                    content_filter=lambda item: item.media_content_type.startswith(
+                        "audio/"
+                    ),
+                )
+                # If domain is None, it's overview of available sources
+                if item.domain is None:
+                    children.extend(item.children)
+                else:
+                    children.append(item)
+
+        return BrowseMedia(
             title=media_content_provider.title,
             media_class=MEDIA_CLASS_MAPPING.get(media_content_provider.content_type),
             media_content_id=media_content_provider.content_id,
@@ -409,13 +417,13 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
             children=children,
         )
 
-        return overview
-
-    async def async_select_sound_mode(self, sound_mode):
+    @override
+    async def async_select_sound_mode(self, sound_mode: str) -> None:
         """Select sound mode."""
         await self.coordinator.musiccast.select_sound_mode(self._zone_id, sound_mode)
 
     @property
+    @override
     def media_image_url(self):
         """Return the image url of current playing media."""
         if self.is_client and self.group_server != self:
@@ -423,6 +431,7 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         return self.coordinator.musiccast.media_image_url if self._is_netusb else None
 
     @property
+    @override
     def media_title(self):
         """Return the title of current playing media."""
         if self._is_netusb:
@@ -433,6 +442,7 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         return None
 
     @property
+    @override
     def media_artist(self):
         """Return the artist of current playing media (Music track only)."""
         if self._is_netusb:
@@ -443,47 +453,56 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         return None
 
     @property
+    @override
     def media_album_name(self):
         """Return the album of current playing media (Music track only)."""
         return self.coordinator.data.netusb_album if self._is_netusb else None
 
     @property
+    @override
     def repeat(self):
         """Return current repeat mode."""
         return (
             MC_REPEAT_MODE_TO_HA_MAPPING.get(self.coordinator.data.netusb_repeat)
             if self._is_netusb
-            else REPEAT_MODE_OFF
+            else RepeatMode.OFF
         )
 
     @property
-    def supported_features(self):
+    @override
+    def supported_features(self) -> MediaPlayerEntityFeature:
         """Flag media player features that are supported."""
         supported_features = MUSIC_PLAYER_BASE_SUPPORT
         zone = self.coordinator.data.zones[self._zone_id]
 
         if ZoneFeature.POWER in zone.features:
-            supported_features |= SUPPORT_TURN_ON | SUPPORT_TURN_OFF
+            supported_features |= (
+                MediaPlayerEntityFeature.TURN_ON | MediaPlayerEntityFeature.TURN_OFF
+            )
         if ZoneFeature.VOLUME in zone.features:
-            supported_features |= SUPPORT_VOLUME_SET | SUPPORT_VOLUME_STEP
+            supported_features |= (
+                MediaPlayerEntityFeature.VOLUME_SET
+                | MediaPlayerEntityFeature.VOLUME_STEP
+            )
         if ZoneFeature.MUTE in zone.features:
-            supported_features |= SUPPORT_VOLUME_MUTE
+            supported_features |= MediaPlayerEntityFeature.VOLUME_MUTE
 
         if self._is_netusb or self._is_tuner:
-            supported_features |= SUPPORT_PREVIOUS_TRACK
-            supported_features |= SUPPORT_NEXT_TRACK
+            supported_features |= MediaPlayerEntityFeature.PREVIOUS_TRACK
+            supported_features |= MediaPlayerEntityFeature.NEXT_TRACK
 
         if self._is_netusb:
-            supported_features |= SUPPORT_PAUSE
-            supported_features |= SUPPORT_PLAY
-            supported_features |= SUPPORT_STOP
+            supported_features |= MediaPlayerEntityFeature.PAUSE
+            supported_features |= MediaPlayerEntityFeature.PLAY
+            supported_features |= MediaPlayerEntityFeature.STOP
 
-        if self.state != STATE_OFF:
-            supported_features |= SUPPORT_BROWSE_MEDIA
+        if self.state != MediaPlayerState.OFF:
+            supported_features |= MediaPlayerEntityFeature.BROWSE_MEDIA
 
         return supported_features
 
-    async def async_media_previous_track(self):
+    @override
+    async def async_media_previous_track(self) -> None:
         """Send previous track command."""
         if self._is_netusb:
             await self.coordinator.musiccast.netusb_previous_track()
@@ -491,10 +510,12 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
             await self.coordinator.musiccast.tuner_previous_station()
         else:
             raise HomeAssistantError(
-                "Service previous track is not supported for non NetUSB or Tuner sources."
+                "Service previous track is not supported for non NetUSB or Tuner"
+                " sources."
             )
 
-    async def async_media_next_track(self):
+    @override
+    async def async_media_next_track(self) -> None:
         """Send next track command."""
         if self._is_netusb:
             await self.coordinator.musiccast.netusb_next_track()
@@ -505,7 +526,8 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
                 "Service next track is not supported for non NetUSB or Tuner sources."
             )
 
-    async def async_set_repeat(self, repeat):
+    @override
+    async def async_set_repeat(self, repeat: RepeatMode) -> None:
         """Enable/disable repeat mode."""
         if self._is_netusb:
             await self.coordinator.musiccast.netusb_repeat(
@@ -516,21 +538,32 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
                 "Service set repeat is not supported for non NetUSB sources."
             )
 
-    async def async_select_source(self, source):
+    @override
+    async def async_select_source(self, source: str) -> None:
         """Select input source."""
-        await self.coordinator.musiccast.select_source(self._zone_id, source)
+        await self.coordinator.musiccast.select_source(
+            self._zone_id, self.reverse_source_mapping.get(source, source)
+        )
 
     @property
-    def source(self):
-        """Name of the current input source."""
+    def source_id(self):
+        """ID of the current input source."""
         return self.coordinator.data.zones[self._zone_id].input
 
     @property
-    def source_list(self):
-        """List of available input sources."""
-        return self.coordinator.data.zones[self._zone_id].input_list
+    @override
+    def source(self):
+        """Name of the current input source."""
+        return self.source_mapping.get(self.source_id)
 
     @property
+    @override
+    def source_list(self):
+        """List of available input sources."""
+        return list(self.source_mapping.values())
+
+    @property
+    @override
     def media_duration(self):
         """Duration of current playing media in seconds."""
         if self._is_netusb:
@@ -539,6 +572,7 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         return None
 
     @property
+    @override
     def media_position(self):
         """Position of current playing media in seconds."""
         if self._is_netusb:
@@ -547,6 +581,7 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         return None
 
     @property
+    @override
     def media_position_updated_at(self):
         """When was the position of the current playing media valid.
 
@@ -561,7 +596,7 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
 
     @property
     def is_network_server(self) -> bool:
-        """Return only true if the current entity is a network server and not a main zone with an attached zone2."""
+        """Return true if entity is a network server, not a main zone with zone2."""
         return (
             self.coordinator.data.group_role == "server"
             and self.coordinator.data.group_id != NULL_GROUP
@@ -597,11 +632,11 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
 
     @property
     def is_network_client(self) -> bool:
-        """Return True if the current entity is a network client and not just a main syncing entity."""
+        """Return True if entity is a network client, not just a main sync."""
         return (
             self.coordinator.data.group_role == "client"
             and self.coordinator.data.group_id != NULL_GROUP
-            and self.source == ATTR_MC_LINK
+            and self.source_id == ATTR_MC_LINK
         )
 
     @property
@@ -610,26 +645,29 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
 
         If the media player is not part of a group, False is returned.
         """
-        return self.is_network_client or self.source == ATTR_MAIN_SYNC
+        return self.is_network_client or self.source_id == ATTR_MAIN_SYNC
 
     def get_all_mc_entities(self) -> list[MusicCastMediaPlayer]:
         """Return all media player entities of the musiccast system."""
+        entries: list[MusicCastConfigEntry] = (
+            self.hass.config_entries.async_loaded_entries(DOMAIN)
+        )
         entities = []
-        for coordinator in self.hass.data[DOMAIN].values():
+        for entry in entries:
             entities += [
                 entity
-                for entity in coordinator.entities
+                for entity in entry.runtime_data.entities
                 if isinstance(entity, MusicCastMediaPlayer)
             ]
         return entities
 
     def get_all_server_entities(self) -> list[MusicCastMediaPlayer]:
-        """Return all media player entities in the musiccast system, which are in server mode."""
+        """Return all media player entities in server mode."""
         entities = self.get_all_mc_entities()
         return [entity for entity in entities if entity.is_server]
 
     def get_distribution_num(self) -> int:
-        """Return the distribution_num (number of clients in the whole musiccast system)."""
+        """Return the distribution_num (number of clients)."""
         return sum(
             len(server.coordinator.data.group_client_list)
             for server in self.get_all_server_entities()
@@ -643,11 +681,11 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
                 and self.coordinator.data.group_id
                 == group_server.coordinator.data.group_id
                 and self.ip_address != group_server.ip_address
-                and self.source == ATTR_MC_LINK
+                and self.source_id == ATTR_MC_LINK
             )
             or (
                 self.ip_address == group_server.ip_address
-                and self.source == ATTR_MAIN_SYNC
+                and self.source_id == ATTR_MAIN_SYNC
             )
         )
 
@@ -660,15 +698,17 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         return self
 
     @property
+    @override
     def group_members(self) -> list[str] | None:
         """Return a list of entity_ids, which belong to the group of self."""
         return [entity.entity_id for entity in self.musiccast_group]
 
     @property
     def musiccast_group(self) -> list[MusicCastMediaPlayer]:
-        """Return all media players of the current group, if the media player is server."""
+        """Return all media players of the current group."""
         if self.is_client:
-            # If we are a client we can still share group information, but we will take them from the server.
+            # If we are a client we can still share group
+            # information, but we will take them from the server.
             if (server := self.group_server) != self:
                 return server.musiccast_group
 
@@ -677,13 +717,15 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
             return [self]
         entities = self.get_all_mc_entities()
         clients = [entity for entity in entities if entity.is_part_of_group(self)]
-        return [self] + clients
+        return [self, *clients]
 
     @property
     def musiccast_zone_entity(self) -> MusicCastMediaPlayer:
-        """Return the the entity of the zone, which is using MusicCast at the moment, if there is one, self else.
+        """Return the entity of the zone using MusicCast.
 
-        It is possible that multiple zones use MusicCast as client at the same time. In this case the first one is
+        It is possible that multiple zones use MusicCast
+        as client at the same time. In this case the first
+        one is
         returned.
         """
         for entity in self.other_zones:
@@ -694,7 +736,8 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
 
     async def update_all_mc_entities(self, check_clients=False):
         """Update the whole musiccast system when group data change."""
-        # First update all servers as they provide the group information for their clients
+        # First update all servers as they provide the
+        # group information for their clients
         for entity in self.get_all_server_entities():
             if check_clients or self.coordinator.musiccast.group_reduce_by_source:
                 await entity.async_check_client_list()
@@ -707,7 +750,8 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
 
     # Services
 
-    async def async_join_players(self, group_members):
+    @override
+    async def async_join_players(self, group_members: list[str]) -> None:
         """Add all clients given in entities to the group of the server.
 
         Creates a new group if necessary. Used for join service.
@@ -724,11 +768,13 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
             if entity.entity_id in group_members
         ]
 
-        if self.state == STATE_OFF:
+        if self.state == MediaPlayerState.OFF:
             await self.async_turn_on()
 
         if not self.is_server and self.musiccast_zone_entity.is_server:
-            # The MusicCast Distribution Module of this device is already in use. To use it as a server, we first
+            # The MusicCast Distribution Module of this
+            # device is already in use. To use it as a server,
+            # we first
             # have to unjoin and wait until the servers are updated.
             await self.musiccast_zone_entity.async_server_close_group()
         elif self.musiccast_zone_entity.is_client:
@@ -737,7 +783,7 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         group = (
             self.coordinator.data.group_id
             if self.is_server
-            else uuid.random_uuid_hex().upper()
+            else uuid_util.random_uuid_hex().upper()
         )
 
         ip_addresses = set()
@@ -746,9 +792,13 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
             if client != self:
                 try:
                     network_join = await client.async_client_join(group, self)
+                # pylint: disable-next=home-assistant-action-swallowed-exception
                 except MusicCastGroupException:
                     _LOGGER.warning(
-                        "%s is struggling to update its group data. Will retry perform the update",
+                        (
+                            "%s is struggling to update its group data. Will retry"
+                            " perform the update"
+                        ),
                         client.entity_id,
                     )
                     network_join = await client.async_client_join(group, self)
@@ -774,7 +824,8 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
 
         await self.update_all_mc_entities(True)
 
-    async def async_unjoin_player(self):
+    @override
+    async def async_unjoin_player(self) -> None:
         """Leave the group.
 
         Stops the distribution if device is server. Used for unjoin service.
@@ -793,12 +844,15 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
     async def async_client_join(self, group_id, server) -> bool:
         """Let the client join a group.
 
-        If this client is a server, the server will stop distributing. If the client is part of a different group,
-        it will leave that group first. Returns True, if the server has to add the client on his side.
+        If this client is a server, the server will stop distributing.
+        If the client is part of a different group,
+        it will leave that group first. Returns True, if the server has to
+        add the client on his side.
         """
-        # If we should join the group, which is served by the main zone, we can simply select main_sync as input.
+        # If we should join the group, which is served by the main zone,
+        # we can simply select main_sync as input.
         _LOGGER.debug("%s called service client join", self.entity_id)
-        if self.state == STATE_OFF:
+        if self.state == MediaPlayerState.OFF:
             await self.async_turn_on()
         if self.ip_address == server.ip_address:
             if server.zone == DEFAULT_ZONE:
@@ -814,8 +868,10 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         if self.musiccast_zone_entity.is_server:
             # If one of the zones of the device is a server, we need to unjoin first.
             _LOGGER.debug(
-                "%s is a server of a group and has to stop distribution "
-                "to use MusicCast for %s",
+                (
+                    "%s is a server of a group and has to stop distribution "
+                    "to use MusicCast for %s"
+                ),
                 self.musiccast_zone_entity.entity_id,
                 self.entity_id,
             )
@@ -837,7 +893,8 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
             and self.coordinator.data.group_id == server.coordinator.data.group_id
             and self.coordinator.data.group_role == "client"
         ):
-            # The device is already part of this group (e.g. main zone is also a client of this group).
+            # The device is already part of this group
+            # (e.g. main zone is also a client of this group).
             # Just select mc_link as source
             await self.coordinator.musiccast.zone_join(self._zone_id)
             return False
@@ -855,8 +912,12 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
         """
         _LOGGER.debug("%s client leave called", self.entity_id)
         if not force and (
-            self.source == ATTR_MAIN_SYNC
-            or [entity for entity in self.other_zones if entity.source == ATTR_MC_LINK]
+            self.source_id == ATTR_MAIN_SYNC
+            or [
+                entity
+                for entity in self.other_zones
+                if entity.source_id == ATTR_MC_LINK
+            ]
         ):
             await self.coordinator.musiccast.zone_unjoin(self._zone_id)
         else:
@@ -890,13 +951,13 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
             return
 
         _LOGGER.debug("%s updates his group members", self.entity_id)
-        client_ips_for_removal = []
-        for expected_client_ip in self.coordinator.data.group_client_list:
-            if expected_client_ip not in [
-                entity.ip_address for entity in self.musiccast_group
-            ]:
-                # The client is no longer part of the group. Prepare removal.
-                client_ips_for_removal.append(expected_client_ip)
+        client_ips_for_removal = [
+            expected_client_ip
+            for expected_client_ip in self.coordinator.data.group_client_list
+            # The client is no longer part of the group. Prepare removal.
+            if expected_client_ip
+            not in [entity.ip_address for entity in self.musiccast_group]
+        ]
 
         if client_ips_for_removal:
             _LOGGER.debug(
@@ -916,4 +977,4 @@ class MusicCastMediaPlayer(MusicCastDeviceEntity, MediaPlayerEntity):
     @callback
     def async_schedule_check_client_list(self):
         """Schedule async_check_client_list."""
-        self.hass.create_task(self.async_check_client_list())
+        self.hass.async_create_task(self.async_check_client_list(), eager_start=True)

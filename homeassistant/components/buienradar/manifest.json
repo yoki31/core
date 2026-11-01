@@ -1,10 +1,12 @@
 {
   "domain": "buienradar",
   "name": "Buienradar",
+  "categories": ["weather_alerts.forecasts"],
+  "codeowners": ["@mjj4791", "@ties", "@Robbie1221"],
   "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/buienradar",
-  "requirements": ["buienradar==1.0.5"],
-  "codeowners": ["@mjj4791", "@ties", "@Robbie1221"],
+  "integration_type": "service",
   "iot_class": "cloud_polling",
-  "loggers": ["buienradar", "vincenty"]
+  "loggers": ["buienradar", "vincenty"],
+  "requirements": ["buienradar==1.0.9"]
 }

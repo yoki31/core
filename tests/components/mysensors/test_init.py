@@ -1,349 +1,211 @@
 """Test function in __init__.py."""
-from __future__ import annotations
 
-from typing import Any
-from unittest.mock import patch
+from collections.abc import Callable
+from unittest.mock import MagicMock, patch
 
+from mysensors import BaseSyncGateway
+from mysensors.sensor import Sensor
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.typing import WebSocketGenerator
 
-from homeassistant.components.mysensors import (
-    CONF_BAUD_RATE,
-    CONF_DEVICE,
-    CONF_GATEWAYS,
-    CONF_PERSISTENCE,
-    CONF_PERSISTENCE_FILE,
-    CONF_RETAIN,
-    CONF_TCP_PORT,
-    CONF_VERSION,
-    DEFAULT_VERSION,
-    DOMAIN,
-)
-from homeassistant.components.mysensors.const import (
-    CONF_GATEWAY_TYPE,
-    CONF_GATEWAY_TYPE_MQTT,
-    CONF_GATEWAY_TYPE_SERIAL,
-    CONF_GATEWAY_TYPE_TCP,
-    CONF_TOPIC_IN_PREFIX,
-    CONF_TOPIC_OUT_PREFIX,
-)
+from homeassistant.components.mysensors import DOMAIN
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.typing import ConfigType
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.setup import async_setup_component
 
 
-@pytest.mark.parametrize(
-    "config, expected_calls, expected_to_succeed, expected_config_entry_data",
-    [
-        (
-            {
-                DOMAIN: {
-                    CONF_GATEWAYS: [
-                        {
-                            CONF_DEVICE: "COM5",
-                            CONF_PERSISTENCE_FILE: "bla.json",
-                            CONF_BAUD_RATE: 57600,
-                            CONF_TCP_PORT: 5003,
-                        }
-                    ],
-                    CONF_VERSION: "2.3",
-                    CONF_PERSISTENCE: False,
-                    CONF_RETAIN: True,
-                }
-            },
-            1,
-            True,
-            [
-                {
-                    CONF_GATEWAY_TYPE: CONF_GATEWAY_TYPE_SERIAL,
-                    CONF_DEVICE: "COM5",
-                    CONF_PERSISTENCE_FILE: "bla.json",
-                    CONF_BAUD_RATE: 57600,
-                    CONF_VERSION: "2.3",
-                    CONF_TCP_PORT: 5003,
-                    CONF_TOPIC_IN_PREFIX: "",
-                    CONF_TOPIC_OUT_PREFIX: "",
-                    CONF_RETAIN: True,
-                }
-            ],
-        ),
-        (
-            {
-                DOMAIN: {
-                    CONF_GATEWAYS: [
-                        {
-                            CONF_DEVICE: "127.0.0.1",
-                            CONF_PERSISTENCE_FILE: "blub.pickle",
-                            CONF_BAUD_RATE: 115200,
-                            CONF_TCP_PORT: 343,
-                        }
-                    ],
-                    CONF_VERSION: "2.4",
-                    CONF_PERSISTENCE: False,
-                    CONF_RETAIN: False,
-                }
-            },
-            1,
-            True,
-            [
-                {
-                    CONF_GATEWAY_TYPE: CONF_GATEWAY_TYPE_TCP,
-                    CONF_DEVICE: "127.0.0.1",
-                    CONF_PERSISTENCE_FILE: "blub.pickle",
-                    CONF_TCP_PORT: 343,
-                    CONF_VERSION: "2.4",
-                    CONF_BAUD_RATE: 115200,
-                    CONF_TOPIC_IN_PREFIX: "",
-                    CONF_TOPIC_OUT_PREFIX: "",
-                    CONF_RETAIN: False,
-                }
-            ],
-        ),
-        (
-            {
-                DOMAIN: {
-                    CONF_GATEWAYS: [
-                        {
-                            CONF_DEVICE: "127.0.0.1",
-                        }
-                    ],
-                    CONF_PERSISTENCE: False,
-                    CONF_RETAIN: False,
-                }
-            },
-            1,
-            True,
-            [
-                {
-                    CONF_GATEWAY_TYPE: CONF_GATEWAY_TYPE_TCP,
-                    CONF_DEVICE: "127.0.0.1",
-                    CONF_TCP_PORT: 5003,
-                    CONF_VERSION: DEFAULT_VERSION,
-                    CONF_BAUD_RATE: 115200,
-                    CONF_TOPIC_IN_PREFIX: "",
-                    CONF_TOPIC_OUT_PREFIX: "",
-                    CONF_RETAIN: False,
-                    CONF_PERSISTENCE_FILE: "mysensors1.pickle",
-                }
-            ],
-        ),
-        (
-            {
-                DOMAIN: {
-                    CONF_GATEWAYS: [
-                        {
-                            CONF_DEVICE: "mqtt",
-                            CONF_BAUD_RATE: 115200,
-                            CONF_TCP_PORT: 5003,
-                            CONF_TOPIC_IN_PREFIX: "intopic",
-                            CONF_TOPIC_OUT_PREFIX: "outtopic",
-                        }
-                    ],
-                    CONF_PERSISTENCE: False,
-                    CONF_RETAIN: False,
-                }
-            },
-            1,
-            True,
-            [
-                {
-                    CONF_GATEWAY_TYPE: CONF_GATEWAY_TYPE_MQTT,
-                    CONF_DEVICE: "mqtt",
-                    CONF_VERSION: DEFAULT_VERSION,
-                    CONF_BAUD_RATE: 115200,
-                    CONF_TCP_PORT: 5003,
-                    CONF_TOPIC_OUT_PREFIX: "outtopic",
-                    CONF_TOPIC_IN_PREFIX: "intopic",
-                    CONF_RETAIN: False,
-                    CONF_PERSISTENCE_FILE: "mysensors1.pickle",
-                }
-            ],
-        ),
-        (
-            {
-                DOMAIN: {
-                    CONF_GATEWAYS: [
-                        {
-                            CONF_DEVICE: "mqtt",
-                            CONF_BAUD_RATE: 115200,
-                            CONF_TCP_PORT: 5003,
-                        }
-                    ],
-                    CONF_PERSISTENCE: False,
-                    CONF_RETAIN: False,
-                }
-            },
-            0,
-            True,
-            [{}],
-        ),
-        (
-            {
-                DOMAIN: {
-                    CONF_GATEWAYS: [
-                        {
-                            CONF_DEVICE: "mqtt",
-                            CONF_PERSISTENCE_FILE: "bla.json",
-                            CONF_TOPIC_OUT_PREFIX: "out",
-                            CONF_TOPIC_IN_PREFIX: "in",
-                            CONF_BAUD_RATE: 115200,
-                            CONF_TCP_PORT: 5003,
-                        },
-                        {
-                            CONF_DEVICE: "COM6",
-                            CONF_PERSISTENCE_FILE: "bla2.json",
-                            CONF_BAUD_RATE: 115200,
-                            CONF_TCP_PORT: 5003,
-                        },
-                    ],
-                    CONF_VERSION: "2.4",
-                    CONF_PERSISTENCE: False,
-                    CONF_RETAIN: False,
-                }
-            },
-            2,
-            True,
-            [
-                {
-                    CONF_DEVICE: "mqtt",
-                    CONF_PERSISTENCE_FILE: "bla.json",
-                    CONF_TOPIC_OUT_PREFIX: "out",
-                    CONF_TOPIC_IN_PREFIX: "in",
-                    CONF_BAUD_RATE: 115200,
-                    CONF_TCP_PORT: 5003,
-                    CONF_VERSION: "2.4",
-                    CONF_RETAIN: False,
-                    CONF_GATEWAY_TYPE: CONF_GATEWAY_TYPE_MQTT,
-                },
-                {
-                    CONF_DEVICE: "COM6",
-                    CONF_PERSISTENCE_FILE: "bla2.json",
-                    CONF_TOPIC_OUT_PREFIX: "",
-                    CONF_TOPIC_IN_PREFIX: "",
-                    CONF_BAUD_RATE: 115200,
-                    CONF_TCP_PORT: 5003,
-                    CONF_VERSION: "2.4",
-                    CONF_RETAIN: False,
-                    CONF_GATEWAY_TYPE: CONF_GATEWAY_TYPE_SERIAL,
-                },
-            ],
-        ),
-        (
-            {
-                DOMAIN: {
-                    CONF_GATEWAYS: [
-                        {
-                            CONF_DEVICE: "mqtt",
-                            CONF_PERSISTENCE_FILE: "bla.json",
-                            CONF_BAUD_RATE: 115200,
-                            CONF_TCP_PORT: 5003,
-                        },
-                        {
-                            CONF_DEVICE: "COM6",
-                            CONF_PERSISTENCE_FILE: "bla.json",
-                            CONF_BAUD_RATE: 115200,
-                            CONF_TCP_PORT: 5003,
-                        },
-                    ],
-                    CONF_VERSION: "2.4",
-                    CONF_PERSISTENCE: False,
-                    CONF_RETAIN: False,
-                }
-            },
-            0,
-            False,
-            [{}],
-        ),
-        (
-            {
-                DOMAIN: {
-                    CONF_GATEWAYS: [
-                        {
-                            CONF_DEVICE: "COMx",
-                            CONF_PERSISTENCE_FILE: "bla.json",
-                            CONF_BAUD_RATE: 115200,
-                            CONF_TCP_PORT: 5003,
-                        },
-                    ],
-                    CONF_VERSION: "2.4",
-                    CONF_PERSISTENCE: False,
-                    CONF_RETAIN: False,
-                }
-            },
-            0,
-            True,
-            [{}],
-        ),
-        (
-            {
-                DOMAIN: {
-                    CONF_GATEWAYS: [
-                        {
-                            CONF_DEVICE: "COM1",
-                        },
-                        {
-                            CONF_DEVICE: "COM2",
-                        },
-                    ],
-                }
-            },
-            2,
-            True,
-            [
-                {
-                    CONF_DEVICE: "COM1",
-                    CONF_PERSISTENCE_FILE: "mysensors1.pickle",
-                    CONF_TOPIC_OUT_PREFIX: "",
-                    CONF_TOPIC_IN_PREFIX: "",
-                    CONF_BAUD_RATE: 115200,
-                    CONF_TCP_PORT: 5003,
-                    CONF_VERSION: "1.4",
-                    CONF_RETAIN: True,
-                    CONF_GATEWAY_TYPE: CONF_GATEWAY_TYPE_SERIAL,
-                },
-                {
-                    CONF_DEVICE: "COM2",
-                    CONF_PERSISTENCE_FILE: "mysensors2.pickle",
-                    CONF_TOPIC_OUT_PREFIX: "",
-                    CONF_TOPIC_IN_PREFIX: "",
-                    CONF_BAUD_RATE: 115200,
-                    CONF_TCP_PORT: 5003,
-                    CONF_VERSION: "1.4",
-                    CONF_RETAIN: True,
-                    CONF_GATEWAY_TYPE: CONF_GATEWAY_TYPE_SERIAL,
-                },
-            ],
-        ),
-    ],
-)
-async def test_import(
-    hass: HomeAssistant,
-    mqtt: None,
-    config: ConfigType,
-    expected_calls: int,
-    expected_to_succeed: bool,
-    expected_config_entry_data: list[dict[str, Any]],
+async def test_gateway_setup_failed(
+    hass: HomeAssistant, serial_entry: MockConfigEntry
 ) -> None:
-    """Test importing a gateway."""
+    """Test setup fails when the gateway can't be set up."""
+    serial_entry.add_to_hass(hass)
 
-    with patch("sys.platform", "win32"), patch(
-        "homeassistant.components.mysensors.config_flow.try_connect", return_value=True
-    ), patch(
-        "homeassistant.components.mysensors.async_setup_entry",
-        return_value=True,
-    ) as mock_setup_entry:
-        result = await async_setup_component(hass, DOMAIN, config)
-        assert result == expected_to_succeed
+    with patch("homeassistant.components.mysensors.setup_gateway", return_value=None):
+        await hass.config_entries.async_setup(serial_entry.entry_id)
         await hass.async_block_till_done()
 
-    assert len(mock_setup_entry.mock_calls) == expected_calls
+    assert serial_entry.state is ConfigEntryState.SETUP_ERROR
+    assert serial_entry.reason == "Gateway setup failed"
 
-    for idx in range(expected_calls):
-        config_entry = mock_setup_entry.mock_calls[idx][1][1]
-        expected_persistence_file = expected_config_entry_data[idx].pop(
-            CONF_PERSISTENCE_FILE
-        )
-        expected_persistence_path = hass.config.path(expected_persistence_file)
-        config_entry_data = dict(config_entry.data)
-        persistence_path = config_entry_data.pop(CONF_PERSISTENCE_FILE)
-        assert persistence_path == expected_persistence_path
-        assert config_entry_data == expected_config_entry_data[idx]
+
+async def test_load_unload(
+    hass: HomeAssistant,
+    door_sensor: Sensor,
+    transport: MagicMock,
+    integration: MockConfigEntry,
+    receive_message: Callable[[str], None],
+) -> None:
+    """Test loading and unloading the MySensors config entry."""
+    config_entry = integration
+
+    assert config_entry.state is ConfigEntryState.LOADED
+
+    entity_id = "binary_sensor.door_sensor_1_1"
+    state = hass.states.get(entity_id)
+
+    assert state
+    assert state.state != STATE_UNAVAILABLE
+
+    receive_message("1;1;1;0;16;1\n")
+    await hass.async_block_till_done()
+
+    state = hass.states.get(entity_id)
+
+    assert state
+    assert state.state != STATE_UNAVAILABLE
+
+    assert await hass.config_entries.async_unload(config_entry.entry_id)
+
+    assert transport.return_value.disconnect.call_count == 1
+
+    state = hass.states.get(entity_id)
+
+    assert state
+    assert state.state == STATE_UNAVAILABLE
+
+    receive_message("1;1;1;0;16;1\n")
+    await hass.async_block_till_done()
+
+    state = hass.states.get(entity_id)
+
+    assert state
+    assert state.state == STATE_UNAVAILABLE
+
+
+@pytest.mark.usefixtures("door_sensor")
+async def test_reload(
+    hass: HomeAssistant,
+    transport: MagicMock,
+    integration: MockConfigEntry,
+) -> None:
+    """Test reloading the MySensors config entry recreates entities."""
+    config_entry = integration
+
+    entity_id = "binary_sensor.door_sensor_1_1"
+    state = hass.states.get(entity_id)
+
+    assert state
+    assert state.state != STATE_UNAVAILABLE
+
+    assert await hass.config_entries.async_reload(config_entry.entry_id)
+
+    assert config_entry.state is ConfigEntryState.LOADED
+    assert transport.return_value.disconnect.call_count == 1
+
+    state = hass.states.get(entity_id)
+
+    assert state
+    assert state.state != STATE_UNAVAILABLE
+
+
+@pytest.mark.usefixtures("text_node", "integration")
+async def test_disabling_entity_keeps_other_platforms_dev_id(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    receive_message: Callable[[str], None],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test that disabling one entity does not discard another platform's dev id.
+
+    An S_INFO/V_TEXT child is set up on both the sensor and text platforms, sharing
+    the same dev id. Disabling only the text entity must not discard that dev id
+    for the sensor platform too, or the next message for it would make the
+    integration attempt to recreate the still-loaded sensor entity as a duplicate.
+    """
+    sensor_entity_id = "sensor.text_node_1_1"
+    text_entity_id = "text.text_node_1_1"
+
+    assert hass.states.get(sensor_entity_id)
+    assert hass.states.get(text_entity_id)
+
+    entity_registry.async_update_entity(
+        text_entity_id, disabled_by=er.RegistryEntryDisabler.USER
+    )
+    await hass.async_block_till_done()
+
+    assert not hass.states.get(text_entity_id)
+    assert hass.states.get(sensor_entity_id)
+
+    receive_message("1;1;1;0;47;test\n")
+    await hass.async_block_till_done()
+
+    assert "already exists" not in caplog.text
+    assert hass.states.get(sensor_entity_id)
+    assert not hass.states.get(text_entity_id)
+
+    text_entry = entity_registry.async_get(text_entity_id)
+    assert text_entry
+    assert text_entry.disabled_by is er.RegistryEntryDisabler.USER
+
+
+async def test_remove_config_entry_device(
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
+    gps_sensor: Sensor,
+    integration: MockConfigEntry,
+    gateway: BaseSyncGateway,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """Test that a device can be removed ok."""
+    entity_id = "sensor.gps_sensor_1_1"
+    node_id = 1
+    config_entry = integration
+    assert await async_setup_component(hass, "config", {})
+    await hass.async_block_till_done()
+
+    device_entry = device_registry.async_get_device_by_identifier(
+        (DOMAIN, f"{config_entry.entry_id}-{node_id}"), config_entry.entry_id
+    )
+    state = hass.states.get(entity_id)
+
+    assert gateway.sensors
+    assert gateway.sensors[node_id]
+    assert device_entry
+    assert state
+
+    client = await hass_ws_client(hass)
+    response = await client.remove_device(device_entry.id)
+    assert response["success"]
+    await hass.async_block_till_done()
+
+    assert node_id not in gateway.sensors
+    assert gateway.tasks.persistence.need_save is True
+    assert not device_registry.async_get_device_by_identifier(
+        (DOMAIN, f"{config_entry.entry_id}-1"), config_entry.entry_id
+    )
+    assert not entity_registry.async_get(entity_id)
+    assert not hass.states.get(entity_id)
+
+
+async def test_remove_config_entry_device_rejects_child_device(
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    integration: MockConfigEntry,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """Test that removing an unexpected child device is rejected."""
+    config_entry = integration
+    assert await async_setup_component(hass, "config", {})
+
+    parent_device = device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        identifiers={(DOMAIN, "test_parent_device")},
+    )
+    child_device = device_registry.async_get_or_create_child(
+        config_entry_id=config_entry.entry_id,
+        identifiers={(DOMAIN, "test_child_device")},
+        parent_device_id=parent_device.id,
+    )
+
+    client = await hass_ws_client(hass)
+    response = await client.remove_device(child_device.id)
+    assert not response["success"]
+    assert (
+        response["error"]["message"]
+        == "Failed to remove device entry, rejected by integration"
+    )
+    assert device_registry.async_get(child_device.id)

@@ -1,5 +1,4 @@
 """The Flux LED/MagicLight integration discovery."""
-from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
@@ -19,19 +18,19 @@ from flux_led.const import (
     ATTR_REMOTE_ACCESS_PORT,
     ATTR_VERSION_NUM,
 )
+from flux_led.models_db import get_model_description
 from flux_led.scanner import FluxLEDDiscovery
 
-from homeassistant import config_entries
 from homeassistant.components import network
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_NAME
+from homeassistant.config_entries import SOURCE_INTEGRATION_DISCOVERY, ConfigEntryState
+from homeassistant.const import CONF_HOST, CONF_MODEL, CONF_NAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, discovery_flow
+from homeassistant.util.async_ import create_eager_task
 from homeassistant.util.network import is_ip_address
 
 from .const import (
     CONF_MINOR_VERSION,
-    CONF_MODEL,
     CONF_MODEL_DESCRIPTION,
     CONF_MODEL_INFO,
     CONF_MODEL_NUM,
@@ -42,7 +41,8 @@ from .const import (
     DOMAIN,
     FLUX_LED_DISCOVERY,
 )
-from .util import format_as_flux_mac
+from .coordinator import FluxLedConfigEntry
+from .util import format_as_flux_mac, mac_matches_by_one
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ CONF_TO_DISCOVERY: Final = {
 
 
 @callback
-def async_build_cached_discovery(entry: ConfigEntry) -> FluxLEDDiscovery:
+def async_build_cached_discovery(entry: FluxLedConfigEntry) -> FluxLEDDiscovery:
     """When discovery is unavailable, load it from the config entry."""
     data = entry.data
     return FluxLEDDiscovery(
@@ -80,14 +80,17 @@ def async_build_cached_discovery(entry: ConfigEntry) -> FluxLEDDiscovery:
 
 
 @callback
-def async_name_from_discovery(device: FluxLEDDiscovery) -> str:
+def async_name_from_discovery(
+    device: FluxLEDDiscovery, model_num: int | None = None
+) -> str:
     """Convert a flux_led discovery to a human readable name."""
-    mac_address = device[ATTR_ID]
-    if mac_address is None:
+    if (mac_address := device[ATTR_ID]) is None:
         return device[ATTR_IPADDR]
     short_mac = mac_address[-6:]
     if device[ATTR_MODEL_DESCRIPTION]:
         return f"{device[ATTR_MODEL_DESCRIPTION]} {short_mac}"
+    if model_num is not None:
+        return f"{get_model_description(model_num, None)} {short_mac}"
     return f"{device[ATTR_MODEL]} {short_mac}"
 
 
@@ -103,33 +106,44 @@ def async_populate_data_from_discovery(
             device.get(discovery_key) is not None
             and conf_key
             not in data_updates  # Prefer the model num from TCP instead of UDP
-            and current_data.get(conf_key) != device[discovery_key]  # type: ignore[misc]
+            and current_data.get(conf_key) != device[discovery_key]  # type: ignore[literal-required]
         ):
-            data_updates[conf_key] = device[discovery_key]  # type: ignore[misc]
+            data_updates[conf_key] = device[discovery_key]  # type: ignore[literal-required]
 
 
 @callback
 def async_update_entry_from_discovery(
     hass: HomeAssistant,
-    entry: config_entries.ConfigEntry,
+    entry: FluxLedConfigEntry,
     device: FluxLEDDiscovery,
     model_num: int | None,
+    allow_update_mac: bool,
 ) -> bool:
     """Update a config entry from a flux_led discovery."""
     data_updates: dict[str, Any] = {}
     mac_address = device[ATTR_ID]
     assert mac_address is not None
     updates: dict[str, Any] = {}
-    if not entry.unique_id:
-        updates["unique_id"] = dr.format_mac(mac_address)
+    formatted_mac = dr.format_mac(mac_address)
+    if not entry.unique_id or (
+        allow_update_mac
+        and entry.unique_id != formatted_mac
+        and mac_matches_by_one(formatted_mac, entry.unique_id)
+    ):
+        updates["unique_id"] = formatted_mac
     if model_num and entry.data.get(CONF_MODEL_NUM) != model_num:
         data_updates[CONF_MODEL_NUM] = model_num
     async_populate_data_from_discovery(entry.data, data_updates, device)
-    if not entry.data.get(CONF_NAME) or is_ip_address(entry.data[CONF_NAME]):
-        updates["title"] = data_updates[CONF_NAME] = async_name_from_discovery(device)
-    if data_updates:
+    if is_ip_address(entry.title):
+        updates["title"] = async_name_from_discovery(device, model_num)
+    title_matches_name = entry.title == entry.data.get(CONF_NAME)
+    if data_updates or title_matches_name:
         updates["data"] = {**entry.data, **data_updates}
-    if updates:
+        if title_matches_name:
+            del updates["data"][CONF_NAME]
+    # If the title has changed and the config entry is loaded, a listener is
+    # in place, and we should not reload
+    if updates and not ("title" in updates and entry.state is ConfigEntryState.LOADED):
         return hass.config_entries.async_update_entry(entry, **updates)
     return False
 
@@ -137,8 +151,7 @@ def async_update_entry_from_discovery(
 @callback
 def async_get_discovery(hass: HomeAssistant, host: str) -> FluxLEDDiscovery | None:
     """Check if a device was already discovered via a broadcast discovery."""
-    discoveries: list[FluxLEDDiscovery] = hass.data[DOMAIN][FLUX_LED_DISCOVERY]
-    for discovery in discoveries:
+    for discovery in hass.data[FLUX_LED_DISCOVERY]:
         if discovery[ATTR_IPADDR] == host:
             return discovery
     return None
@@ -147,10 +160,10 @@ def async_get_discovery(hass: HomeAssistant, host: str) -> FluxLEDDiscovery | No
 @callback
 def async_clear_discovery_cache(hass: HomeAssistant, host: str) -> None:
     """Clear the host from the discovery cache."""
-    domain_data = hass.data[DOMAIN]
-    discoveries: list[FluxLEDDiscovery] = domain_data[FLUX_LED_DISCOVERY]
-    domain_data[FLUX_LED_DISCOVERY] = [
-        discovery for discovery in discoveries if discovery[ATTR_IPADDR] != host
+    hass.data[FLUX_LED_DISCOVERY] = [
+        discovery
+        for discovery in hass.data[FLUX_LED_DISCOVERY]
+        if discovery[ATTR_IPADDR] != host
     ]
 
 
@@ -162,16 +175,20 @@ async def async_discover_devices(
         targets = [address]
     else:
         targets = [
-            str(address)
-            for address in await network.async_get_ipv4_broadcast_addresses(hass)
+            str(broadcast_address)
+            for broadcast_address in await network.async_get_ipv4_broadcast_addresses(
+                hass
+            )
         ]
 
     scanner = AIOBulbScanner()
     for idx, discovered in enumerate(
         await asyncio.gather(
             *[
-                scanner.async_scan(timeout=timeout, address=address)
-                for address in targets
+                create_eager_task(
+                    scanner.async_scan(timeout=timeout, address=target_address)
+                )
+                for target_address in targets
             ],
             return_exceptions=True,
         )
@@ -207,10 +224,9 @@ def async_trigger_discovery(
 ) -> None:
     """Trigger config flows for discovered devices."""
     for device in discovered_devices:
-        hass.async_create_task(
-            hass.config_entries.flow.async_init(
-                DOMAIN,
-                context={"source": config_entries.SOURCE_DISCOVERY},
-                data={**device},
-            )
+        discovery_flow.async_create_flow(
+            hass,
+            DOMAIN,
+            context={"source": SOURCE_INTEGRATION_DISCOVERY},
+            data={**device},
         )

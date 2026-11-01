@@ -1,10 +1,9 @@
 """Tests for the flux_led integration."""
-from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
 from contextlib import contextmanager
-import datetime
+import datetime as dt
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from flux_led import DeviceType
@@ -22,14 +21,14 @@ from flux_led.protocol import (
     RemoteConfig,
 )
 from flux_led.scanner import FluxLEDDiscovery
+from pytest_homeassistant.common import MockConfigEntry
 
-from homeassistant.components import dhcp
 from homeassistant.components.flux_led.const import DOMAIN
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.core import HomeAssistant
-
-from tests.common import MockConfigEntry
+from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 MODULE = "homeassistant.components.flux_led"
 MODULE_CONFIG_FLOW = "homeassistant.components.flux_led.config_flow"
@@ -39,16 +38,18 @@ MODEL_NUM = 0x35
 MODEL = "AK001-ZJ2149"
 MODEL_DESCRIPTION = "Bulb RGBCW"
 MAC_ADDRESS = "aa:bb:cc:dd:ee:ff"
+MAC_ADDRESS_ONE_OFF = "aa:bb:cc:dd:ee:fe"
+
 FLUX_MAC_ADDRESS = "AABBCCDDEEFF"
 SHORT_MAC_ADDRESS = "DDEEFF"
 
 DEFAULT_ENTRY_TITLE = f"{MODEL_DESCRIPTION} {SHORT_MAC_ADDRESS}"
 
 
-DHCP_DISCOVERY = dhcp.DhcpServiceInfo(
+DHCP_DISCOVERY = DhcpServiceInfo(
     hostname=MODEL,
     ip=IP_ADDRESS,
-    macaddress=MAC_ADDRESS,
+    macaddress=format_mac(MAC_ADDRESS).replace(":", ""),
 )
 FLUX_DISCOVERY_PARTIAL = FluxLEDDiscovery(
     ipaddr=IP_ADDRESS,
@@ -66,7 +67,7 @@ FLUX_DISCOVERY = FluxLEDDiscovery(
     id=FLUX_MAC_ADDRESS,
     model_num=MODEL_NUM,
     version_num=0x04,
-    firmware_date=datetime.date(2021, 5, 5),
+    firmware_date=dt.date(2021, 5, 5),
     model_info=MODEL,
     model_description=MODEL_DESCRIPTION,
     remote_access_enabled=True,
@@ -110,6 +111,7 @@ def _mocked_bulb() -> AIOWifiLedBulb:
     bulb.paired_remotes = 2
     bulb.pixels_per_segment = 300
     bulb.segments = 2
+    bulb.diagnostics = {"mock_diag": "mock_diag"}
     bulb.music_pixels_per_segment = 150
     bulb.music_segments = 4
     bulb.operating_mode = "RGB&W"
@@ -172,6 +174,8 @@ def _mocked_switch() -> AIOWifiLedBulb:
     switch.pixels_per_segment = None
     switch.segments = None
     switch.music_pixels_per_segment = None
+    switch.paired_remotes = 2
+    switch.remote_config = RemoteConfig.OPEN
     switch.music_segments = None
     switch.operating_mode = None
     switch.operating_modes = None
@@ -180,6 +184,8 @@ def _mocked_switch() -> AIOWifiLedBulb:
     switch.ic_types = None
     switch.ic_type = None
     switch.requires_turn_on = True
+    switch.async_config_remotes = AsyncMock()
+    switch.async_unpair_remotes = AsyncMock()
     switch.async_set_time = AsyncMock()
     switch.async_reboot = AsyncMock()
     switch.async_setup = AsyncMock(side_effect=_save_setup_callback)
@@ -232,12 +238,15 @@ def _patch_discovery(device=None, no_device=False):
 
     @contextmanager
     def _patcher():
-        with patch(
-            "homeassistant.components.flux_led.discovery.AIOBulbScanner.async_scan",
-            new=_discovery,
-        ), patch(
-            "homeassistant.components.flux_led.discovery.AIOBulbScanner.getBulbInfo",
-            return_value=[] if no_device else [device or FLUX_DISCOVERY],
+        with (
+            patch(
+                "homeassistant.components.flux_led.discovery.AIOBulbScanner.async_scan",
+                new=_discovery,
+            ),
+            patch(
+                "homeassistant.components.flux_led.discovery.AIOBulbScanner.getBulbInfo",
+                return_value=[] if no_device else [device or FLUX_DISCOVERY],
+            ),
         ):
             yield
 
@@ -250,6 +259,6 @@ def _patch_wifibulb(device=None, no_device=False):
         if no_device:
             bulb.async_setup = AsyncMock(side_effect=asyncio.TimeoutError)
             return bulb
-        return device if device else _mocked_bulb()
+        return device or _mocked_bulb()
 
     return patch("homeassistant.components.flux_led.AIOWifiLedBulb", new=_wifi_led_bulb)

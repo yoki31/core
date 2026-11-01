@@ -1,21 +1,31 @@
 """Tests for the AsusWrt config flow."""
+
 from socket import gaierror
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import patch
 
+from asusrouter import AsusRouterError
+from asusrouter.modules.identity import AsusDevice
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
-from homeassistant import data_entry_flow
 from homeassistant.components.asuswrt.const import (
     CONF_DNSMASQ,
     CONF_INTERFACE,
+    CONF_MORE_OPTIONS,
     CONF_REQUIRE_IP,
     CONF_SSH_KEY,
     CONF_TRACK_UNKNOWN,
     DOMAIN,
+    MODE_AP,
+    MODE_ROUTER,
+    PROTOCOL_HTTPS,
+    PROTOCOL_SSH,
+    PROTOCOL_TELNET,
 )
-from homeassistant.components.device_tracker.const import CONF_CONSIDER_HOME
-from homeassistant.config_entries import SOURCE_IMPORT, SOURCE_USER
+from homeassistant.components.device_tracker import CONF_CONSIDER_HOME
+from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import (
+    CONF_BASE,
     CONF_HOST,
     CONF_MODE,
     CONF_PASSWORD,
@@ -23,274 +33,561 @@ from homeassistant.const import (
     CONF_PROTOCOL,
     CONF_USERNAME,
 )
+from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
 
-from tests.common import MockConfigEntry
+from .common import ASUSWRT_BASE, HOST, ROUTER_MAC_ADDR
 
-HOST = "myrouter.asuswrt.com"
-IP_ADDRESS = "192.168.1.1"
 SSH_KEY = "1234"
 
 CONFIG_DATA = {
     CONF_HOST: HOST,
-    CONF_PORT: 22,
-    CONF_PROTOCOL: "telnet",
     CONF_USERNAME: "user",
     CONF_PASSWORD: "pwd",
-    CONF_MODE: "ap",
+}
+
+CONFIG_SCHEMA_HTTP = {
+    **CONFIG_DATA,
+    CONF_PROTOCOL: PROTOCOL_HTTPS,
+    CONF_MORE_OPTIONS: {CONF_PORT: 8443},
+}
+
+CONFIG_DATA_HTTP = {
+    **CONFIG_DATA,
+    CONF_PROTOCOL: PROTOCOL_HTTPS,
+    CONF_PORT: 8443,
+}
+
+CONFIG_SCHEMA_TELNET = {
+    **CONFIG_DATA,
+    CONF_PROTOCOL: PROTOCOL_TELNET,
+    CONF_MORE_OPTIONS: {CONF_PORT: 23},
+}
+
+CONFIG_DATA_TELNET = {
+    **CONFIG_DATA,
+    CONF_PROTOCOL: PROTOCOL_TELNET,
+    CONF_PORT: 23,
+}
+
+CONFIG_SCHEMA_SSH = {
+    **CONFIG_DATA,
+    CONF_PROTOCOL: PROTOCOL_SSH,
+    CONF_MORE_OPTIONS: {CONF_PORT: 22},
 }
 
 
-@pytest.fixture(name="connect")
-def mock_controller_connect():
-    """Mock a successful connection."""
-    with patch("homeassistant.components.asuswrt.router.AsusWrt") as service_mock:
-        service_mock.return_value.connection.async_connect = AsyncMock()
-        service_mock.return_value.is_connected = True
-        service_mock.return_value.connection.disconnect = Mock()
-        yield service_mock
+@pytest.fixture(name="patch_get_host", autouse=True)
+def mock_controller_patch_get_host():
+    """Mock call to socket gethostbyname function."""
+    with patch(
+        f"{ASUSWRT_BASE}.config_flow.socket.gethostbyname", return_value="192.168.1.1"
+    ) as get_host_mock:
+        yield get_host_mock
 
 
-async def test_user(hass, connect):
+@pytest.fixture(name="patch_is_file", autouse=True)
+def mock_controller_patch_is_file():
+    """Mock the config flow _is_file helper."""
+    with patch(
+        f"{ASUSWRT_BASE}.config_flow._is_file", return_value=True
+    ) as is_file_mock:
+        yield is_file_mock
+
+
+@pytest.mark.parametrize(
+    ("unique_id", "expected_unique_id"),
+    [({}, None), ({"label_mac": ROUTER_MAC_ADDR}, ROUTER_MAC_ADDR)],
+)
+async def test_user_legacy(
+    hass: HomeAssistant,
+    connect_legacy,
+    patch_setup_entry,
+    unique_id,
+    expected_unique_id: str | None,
+) -> None:
     """Test user config."""
+    flow_result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert flow_result["type"] is FlowResultType.FORM
+    assert flow_result["step_id"] == "user"
+
+    connect_legacy.return_value.async_get_nvram.return_value = unique_id
+
+    # test with all provided
+    legacy_result = await hass.config_entries.flow.async_configure(
+        flow_result["flow_id"], user_input=CONFIG_SCHEMA_TELNET
+    )
+    await hass.async_block_till_done()
+
+    assert legacy_result["type"] is FlowResultType.FORM
+    assert legacy_result["step_id"] == "legacy"
+
+    # complete configuration
+    result = await hass.config_entries.flow.async_configure(
+        legacy_result["flow_id"], user_input={CONF_MODE: MODE_AP}
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == HOST
+    assert result["data"] == {**CONFIG_DATA_TELNET, CONF_MODE: MODE_AP}
+    assert result["result"].unique_id == expected_unique_id
+
+    assert len(patch_setup_entry.mock_calls) == 1
+
+
+@pytest.mark.parametrize("unique_id", [None, ROUTER_MAC_ADDR])
+async def test_user_http(
+    hass: HomeAssistant, connect_http, patch_setup_entry, unique_id
+) -> None:
+    """Test user config http."""
+    flow_result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert flow_result["type"] is FlowResultType.FORM
+    assert flow_result["step_id"] == "user"
+
+    connect_http.return_value.async_get_identity.return_value = AsusDevice(
+        mac=unique_id,
+        model="FAKE_MODEL",
+        firmware="FAKE_FIRMWARE",
+    )
+
+    # test with all provided
+    result = await hass.config_entries.flow.async_configure(
+        flow_result["flow_id"], user_input=CONFIG_SCHEMA_HTTP
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == HOST
+    assert result["data"] == CONFIG_DATA_HTTP
+    assert result["result"].unique_id == unique_id
+
+    assert len(patch_setup_entry.mock_calls) == 1
+
+
+@pytest.mark.parametrize("config", [CONFIG_SCHEMA_TELNET, CONFIG_SCHEMA_HTTP])
+@pytest.mark.usefixtures("connect_http", "patch_setup_entry")
+async def test_error_pwd_required(hass: HomeAssistant, config) -> None:
+    """Test we abort for missing password."""
+    config_data = {k: v for k, v in config.items() if k != CONF_PASSWORD}
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
     )
-    assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
+
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
 
-    # test with all provided
-    with patch(
-        "homeassistant.components.asuswrt.async_setup_entry",
-        return_value=True,
-    ) as mock_setup_entry, patch(
-        "homeassistant.components.asuswrt.config_flow.socket.gethostbyname",
-        return_value=IP_ADDRESS,
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_USER},
-            data=CONFIG_DATA,
-        )
-        await hass.async_block_till_done()
-
-        assert result["type"] == data_entry_flow.RESULT_TYPE_CREATE_ENTRY
-        assert result["title"] == HOST
-        assert result["data"] == CONFIG_DATA
-
-        assert len(mock_setup_entry.mock_calls) == 1
-
-
-async def test_import(hass, connect):
-    """Test import step."""
-    with patch(
-        "homeassistant.components.asuswrt.async_setup_entry",
-        return_value=True,
-    ) as mock_setup_entry, patch(
-        "homeassistant.components.asuswrt.config_flow.socket.gethostbyname",
-        return_value=IP_ADDRESS,
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_IMPORT},
-            data=CONFIG_DATA,
-        )
-        await hass.async_block_till_done()
-
-        assert result["type"] == data_entry_flow.RESULT_TYPE_CREATE_ENTRY
-        assert result["title"] == HOST
-        assert result["data"] == CONFIG_DATA
-
-        assert len(mock_setup_entry.mock_calls) == 1
-
-
-async def test_import_ssh(hass, connect):
-    """Test import step with ssh file."""
-    config_data = CONFIG_DATA.copy()
-    config_data.pop(CONF_PASSWORD)
-    config_data[CONF_SSH_KEY] = SSH_KEY
-
-    with patch(
-        "homeassistant.components.asuswrt.async_setup_entry",
-        return_value=True,
-    ) as mock_setup_entry, patch(
-        "homeassistant.components.asuswrt.config_flow.socket.gethostbyname",
-        return_value=IP_ADDRESS,
-    ), patch(
-        "homeassistant.components.asuswrt.config_flow.os.path.isfile",
-        return_value=True,
-    ), patch(
-        "homeassistant.components.asuswrt.config_flow.os.access",
-        return_value=True,
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_IMPORT},
-            data=config_data,
-        )
-        await hass.async_block_till_done()
-
-        assert result["type"] == data_entry_flow.RESULT_TYPE_CREATE_ENTRY
-        assert result["title"] == HOST
-        assert result["data"] == config_data
-
-        assert len(mock_setup_entry.mock_calls) == 1
-
-
-async def test_error_no_password_ssh(hass):
-    """Test we abort if component is already setup."""
-    config_data = CONFIG_DATA.copy()
-    config_data.pop(CONF_PASSWORD)
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=config_data,
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=config_data,
     )
 
-    assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
-    assert result["errors"] == {"base": "pwd_or_ssh"}
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_BASE: "pwd_required"}
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=CONFIG_SCHEMA_HTTP,
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
-async def test_error_both_password_ssh(hass):
-    """Test we abort if component is already setup."""
-    config_data = CONFIG_DATA.copy()
-    config_data[CONF_SSH_KEY] = SSH_KEY
+@pytest.mark.usefixtures("connect_legacy", "patch_setup_entry")
+async def test_error_no_password_ssh(hass: HomeAssistant) -> None:
+    """Test we abort for wrong password and ssh file combination."""
+    config_data = {k: v for k, v in CONFIG_SCHEMA_SSH.items() if k != CONF_PASSWORD}
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=config_data,
+        DOMAIN, context={"source": SOURCE_USER}
     )
 
-    assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
-    assert result["errors"] == {"base": "pwd_and_ssh"}
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
 
-
-async def test_error_invalid_ssh(hass):
-    """Test we abort if component is already setup."""
-    config_data = CONFIG_DATA.copy()
-    config_data.pop(CONF_PASSWORD)
-    config_data[CONF_SSH_KEY] = SSH_KEY
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=config_data,
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=config_data,
     )
 
-    assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
-    assert result["errors"] == {"base": "ssh_not_file"}
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_BASE: "pwd_or_ssh"}
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=CONFIG_SCHEMA_SSH,
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "legacy"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_MODE: MODE_AP}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
-async def test_error_invalid_host(hass):
+@pytest.mark.usefixtures("connect_legacy", "patch_setup_entry")
+async def test_error_password_and_ssh(hass: HomeAssistant) -> None:
+    """Test we abort for both password and ssh file combination."""
+    config_data = {**CONFIG_SCHEMA_SSH, CONF_MORE_OPTIONS: {CONF_SSH_KEY: SSH_KEY}}
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=config_data,
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_BASE: "pwd_and_ssh"}
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=CONFIG_SCHEMA_SSH,
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "legacy"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_MODE: MODE_AP}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+@pytest.mark.usefixtures("connect_legacy", "patch_setup_entry")
+async def test_error_invalid_ssh(hass: HomeAssistant, patch_is_file) -> None:
+    """Test we abort if invalid ssh file is provided."""
+    config_data = {k: v for k, v in CONFIG_SCHEMA_SSH.items() if k != CONF_PASSWORD}
+    config_data[CONF_MORE_OPTIONS] = {CONF_SSH_KEY: SSH_KEY}
+
+    def mock_is_file(file) -> bool:
+        if str(file).endswith(SSH_KEY):
+            return False
+        return True
+
+    patch_is_file.side_effect = mock_is_file
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=config_data,
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_BASE: "ssh_not_file"}
+
+    patch_is_file.side_effect = None
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=config_data,
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "legacy"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_MODE: MODE_AP}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+@pytest.mark.usefixtures("connect_legacy", "patch_setup_entry")
+async def test_error_invalid_host(hass: HomeAssistant, patch_get_host) -> None:
     """Test we abort if host name is invalid."""
-    with patch(
-        "homeassistant.components.asuswrt.config_flow.socket.gethostbyname",
-        side_effect=gaierror,
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_USER},
-            data=CONFIG_DATA,
-        )
+    patch_get_host.side_effect = gaierror
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
 
-        assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
-        assert result["errors"] == {"base": "invalid_host"}
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=CONFIG_SCHEMA_TELNET,
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_BASE: "invalid_host"}
+
+    patch_get_host.side_effect = None
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=CONFIG_SCHEMA_TELNET,
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "legacy"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_MODE: MODE_AP}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
-async def test_abort_if_already_setup(hass):
-    """Test we abort if component is already setup."""
+async def test_abort_if_not_unique_id_setup(hass: HomeAssistant) -> None:
+    """Test we abort if component without uniqueid is already setup."""
     MockConfigEntry(
         domain=DOMAIN,
-        data=CONFIG_DATA,
+        data=CONFIG_DATA_TELNET,
     ).add_to_hass(hass)
 
-    with patch(
-        "homeassistant.components.asuswrt.config_flow.socket.gethostbyname",
-        return_value=IP_ADDRESS,
-    ):
-        # Should fail, same HOST (flow)
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_USER},
-            data=CONFIG_DATA,
-        )
-        assert result["type"] == data_entry_flow.RESULT_TYPE_ABORT
-        assert result["reason"] == "single_instance_allowed"
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
 
-        # Should fail, same HOST (import)
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": SOURCE_IMPORT},
-            data=CONFIG_DATA,
-        )
-        assert result["type"] == data_entry_flow.RESULT_TYPE_ABORT
-        assert result["reason"] == "single_instance_allowed"
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "no_unique_id"
 
 
-async def test_on_connect_failed(hass):
-    """Test when we have errors connecting the router."""
+async def test_update_uniqueid_exist(
+    hass: HomeAssistant, connect_http, patch_setup_entry
+) -> None:
+    """Test we update entry if uniqueid is already configured."""
+    existing_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**CONFIG_DATA_HTTP, CONF_HOST: "10.10.10.10"},
+        unique_id=ROUTER_MAC_ADDR,
+    )
+    existing_entry.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=CONFIG_SCHEMA_HTTP,
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == HOST
+    assert result["data"] == CONFIG_DATA_HTTP
+    assert result["result"].unique_id == ROUTER_MAC_ADDR
+    prev_entry = hass.config_entries.async_get_entry(existing_entry.entry_id)
+    assert not prev_entry
+
+
+async def test_abort_invalid_unique_id(hass: HomeAssistant, connect_legacy) -> None:
+    """Test we abort if uniqueid not available."""
+    MockConfigEntry(
+        domain=DOMAIN,
+        data=CONFIG_DATA_TELNET,
+        unique_id=ROUTER_MAC_ADDR,
+    ).add_to_hass(hass)
+
+    connect_legacy.return_value.async_get_nvram.return_value = {}
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=CONFIG_SCHEMA_TELNET,
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "invalid_unique_id"
+
+
+@pytest.mark.parametrize(
+    ("side_effect", "error"),
+    [
+        (OSError, "cannot_connect"),
+        (TypeError, "unknown"),
+        (None, "cannot_connect"),
+    ],
+)
+@pytest.mark.usefixtures("patch_setup_entry")
+async def test_on_connect_legacy_failed(
+    hass: HomeAssistant, connect_legacy, side_effect, error
+) -> None:
+    """Test when we have errors connecting the router with legacy library."""
     flow_result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_USER},
     )
 
-    with patch("homeassistant.components.asuswrt.router.AsusWrt") as asus_wrt:
-        asus_wrt.return_value.connection.async_connect = AsyncMock()
-        asus_wrt.return_value.is_connected = False
-        result = await hass.config_entries.flow.async_configure(
-            flow_result["flow_id"], user_input=CONFIG_DATA
-        )
-        assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
-        assert result["errors"] == {"base": "cannot_connect"}
+    connect_legacy.return_value.is_connected = False
+    connect_legacy.return_value.connection.async_connect.side_effect = side_effect
 
-    with patch("homeassistant.components.asuswrt.router.AsusWrt") as asus_wrt:
-        asus_wrt.return_value.connection.async_connect = AsyncMock(side_effect=OSError)
-        result = await hass.config_entries.flow.async_configure(
-            flow_result["flow_id"], user_input=CONFIG_DATA
-        )
-        assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
-        assert result["errors"] == {"base": "cannot_connect"}
+    # go to legacy form
+    result = await hass.config_entries.flow.async_configure(
+        flow_result["flow_id"], user_input=CONFIG_SCHEMA_TELNET
+    )
+    await hass.async_block_till_done()
 
-    with patch("homeassistant.components.asuswrt.router.AsusWrt") as asus_wrt:
-        asus_wrt.return_value.connection.async_connect = AsyncMock(
-            side_effect=TypeError
-        )
-        result = await hass.config_entries.flow.async_configure(
-            flow_result["flow_id"], user_input=CONFIG_DATA
-        )
-        assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
-        assert result["errors"] == {"base": "unknown"}
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_BASE: error}
+
+    connect_legacy.return_value.is_connected = True
+    connect_legacy.return_value.connection.async_connect.side_effect = None
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=CONFIG_SCHEMA_TELNET
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "legacy"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={CONF_MODE: MODE_AP}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
-async def test_options_flow(hass):
-    """Test config flow options."""
+@pytest.mark.parametrize(
+    ("side_effect", "error"),
+    [
+        (AsusRouterError, "cannot_connect"),
+        (TypeError, "unknown"),
+        (None, "cannot_connect"),
+    ],
+)
+@pytest.mark.usefixtures("patch_setup_entry")
+async def test_on_connect_http_failed(
+    hass: HomeAssistant, connect_http, side_effect, error
+) -> None:
+    """Test when we have errors connecting the router with http library."""
+    flow_result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_USER},
+    )
+
+    connect_http.return_value.connected = False
+    connect_http.return_value.async_connect.side_effect = side_effect
+
+    result = await hass.config_entries.flow.async_configure(
+        flow_result["flow_id"], user_input=CONFIG_SCHEMA_HTTP
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_BASE: error}
+
+    connect_http.return_value.connected = True
+    connect_http.return_value.async_connect.side_effect = None
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=CONFIG_SCHEMA_HTTP
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def test_options_flow_ap(hass: HomeAssistant, patch_setup_entry) -> None:
+    """Test config flow options for ap mode."""
     config_entry = MockConfigEntry(
         domain=DOMAIN,
-        data=CONFIG_DATA,
+        data={**CONFIG_DATA_TELNET, CONF_MODE: MODE_AP},
         options={CONF_REQUIRE_IP: True},
     )
     config_entry.add_to_hass(hass)
 
-    with patch("homeassistant.components.asuswrt.async_setup_entry", return_value=True):
-        await hass.config_entries.async_setup(config_entry.entry_id)
-        await hass.async_block_till_done()
-        result = await hass.config_entries.options.async_init(config_entry.entry_id)
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
 
-        assert result["type"] == data_entry_flow.RESULT_TYPE_FORM
-        assert result["step_id"] == "init"
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+    assert CONF_REQUIRE_IP in result["data_schema"].schema
 
-        result = await hass.config_entries.options.async_configure(
-            result["flow_id"],
-            user_input={
-                CONF_CONSIDER_HOME: 20,
-                CONF_TRACK_UNKNOWN: True,
-                CONF_INTERFACE: "aaa",
-                CONF_DNSMASQ: "bbb",
-                CONF_REQUIRE_IP: False,
-            },
-        )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_CONSIDER_HOME: 20,
+            CONF_TRACK_UNKNOWN: True,
+            CONF_INTERFACE: "aaa",
+            CONF_DNSMASQ: "bbb",
+            CONF_REQUIRE_IP: False,
+        },
+    )
 
-        assert result["type"] == data_entry_flow.RESULT_TYPE_CREATE_ENTRY
-        assert config_entry.options[CONF_CONSIDER_HOME] == 20
-        assert config_entry.options[CONF_TRACK_UNKNOWN] is True
-        assert config_entry.options[CONF_INTERFACE] == "aaa"
-        assert config_entry.options[CONF_DNSMASQ] == "bbb"
-        assert config_entry.options[CONF_REQUIRE_IP] is False
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert config_entry.options == {
+        CONF_CONSIDER_HOME: 20,
+        CONF_TRACK_UNKNOWN: True,
+        CONF_INTERFACE: "aaa",
+        CONF_DNSMASQ: "bbb",
+        CONF_REQUIRE_IP: False,
+    }
+
+
+async def test_options_flow_router(hass: HomeAssistant, patch_setup_entry) -> None:
+    """Test config flow options for router mode."""
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**CONFIG_DATA_TELNET, CONF_MODE: MODE_ROUTER},
+    )
+    config_entry.add_to_hass(hass)
+
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+    assert CONF_REQUIRE_IP not in result["data_schema"].schema
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_CONSIDER_HOME: 20,
+            CONF_TRACK_UNKNOWN: True,
+            CONF_INTERFACE: "aaa",
+            CONF_DNSMASQ: "bbb",
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert config_entry.options == {
+        CONF_CONSIDER_HOME: 20,
+        CONF_TRACK_UNKNOWN: True,
+        CONF_INTERFACE: "aaa",
+        CONF_DNSMASQ: "bbb",
+    }
+
+
+async def test_options_flow_http(hass: HomeAssistant, patch_setup_entry) -> None:
+    """Test config flow options for http mode."""
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**CONFIG_DATA_HTTP, CONF_MODE: MODE_ROUTER},
+    )
+    config_entry.add_to_hass(hass)
+
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+    assert CONF_INTERFACE not in result["data_schema"].schema
+    assert CONF_DNSMASQ not in result["data_schema"].schema
+    assert CONF_REQUIRE_IP not in result["data_schema"].schema
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_CONSIDER_HOME: 20,
+            CONF_TRACK_UNKNOWN: True,
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert config_entry.options == {
+        CONF_CONSIDER_HOME: 20,
+        CONF_TRACK_UNKNOWN: True,
+    }

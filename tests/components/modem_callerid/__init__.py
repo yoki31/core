@@ -4,23 +4,30 @@ from unittest.mock import patch
 
 from phone_modem import DEFAULT_PORT
 
-from homeassistant.const import CONF_DEVICE
-
-CONF_DATA = {CONF_DEVICE: DEFAULT_PORT}
-
-IMPORT_DATA = {"sensor": {"platform": "modem_callerid"}}
+from homeassistant.components.usb import USBDevice
 
 
-def _patch_init_modem():
+def patch_init_modem():
+    """Mock modem."""
     return patch(
-        "homeassistant.components.modem_callerid.PhoneModem",
-        autospec=True,
+        "homeassistant.components.modem_callerid.PhoneModem.initialize",
     )
 
 
-def _patch_config_flow_modem(mocked_modem):
+def patch_config_flow_modem():
+    """Mock modem config flow."""
     return patch(
-        "homeassistant.components.modem_callerid.config_flow.PhoneModem",
-        autospec=True,
-        return_value=mocked_modem,
+        "homeassistant.components.modem_callerid.config_flow.PhoneModem.test",
+    )
+
+
+def com_port() -> USBDevice:
+    """Mock of a serial port."""
+    return USBDevice(
+        device=DEFAULT_PORT,
+        vid="0572",
+        pid="1340",
+        serial_number="1234",
+        manufacturer="Virtual serial port",
+        description="Some serial port",
     )

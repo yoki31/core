@@ -1,71 +1,101 @@
 """Bosch Smart Home Controller base entity."""
-from boschshcpy.device import SHCDevice
 
-from homeassistant.helpers.device_registry import async_get as get_dev_reg
-from homeassistant.helpers.entity import DeviceInfo, Entity
+from functools import partial
+from typing import override
+
+from boschshcpy import SHCDevice
+
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import Entity
 
 from .const import DOMAIN
 
 
-async def async_remove_devices(hass, entity, entry_id):
+async def async_remove_devices(
+    hass: HomeAssistant, entity: SHCBaseEntity, entry_id: str
+) -> None:
     """Get item that is removed from session."""
-    dev_registry = get_dev_reg(hass)
-    device = dev_registry.async_get_device(
-        identifiers={(DOMAIN, entity.device_id)}, connections=set()
+    dev_registry = dr.async_get(hass)
+    device = dev_registry.async_get_device_by_identifier(
+        (DOMAIN, entity.device_id), entry_id
     )
     if device is not None:
-        dev_registry.async_update_device(device.id, remove_config_entry_id=entry_id)
+        dev_registry.async_remove_device(device.id)
 
 
-class SHCEntity(Entity):
-    """Representation of a SHC base entity."""
+class SHCBaseEntity(Entity):
+    """Base representation of a SHC entity."""
 
     _attr_should_poll = False
+    _attr_has_entity_name = True
 
     def __init__(self, device: SHCDevice, parent_id: str, entry_id: str) -> None:
         """Initialize the generic SHC device."""
         self._device = device
         self._entry_id = entry_id
-        self._attr_name = device.name
-        self._attr_unique_id = device.serial
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.id)},
-            manufacturer=device.manufacturer,
-            model=device.device_model,
-            name=device.name,
-            via_device=(
-                DOMAIN,
-                device.parent_device_id
-                if device.parent_device_id is not None
-                else parent_id,
-            ),
-        )
 
-    async def async_added_to_hass(self):
+    @override
+    async def async_added_to_hass(self) -> None:
         """Subscribe to SHC events."""
         await super().async_added_to_hass()
 
-        def on_state_changed():
-            self.schedule_update_ha_state()
-
-        def update_entity_information():
+        def on_state_changed() -> None:
             if self._device.deleted:
                 self.hass.add_job(async_remove_devices(self.hass, self, self._entry_id))
             else:
                 self.schedule_update_ha_state()
 
-        for service in self._device.device_services:
-            service.subscribe_callback(self.entity_id, on_state_changed)
-        self._device.subscribe_callback(self.entity_id, update_entity_information)
-
-    async def async_will_remove_from_hass(self):
-        """Unsubscribe from SHC events."""
-        await super().async_will_remove_from_hass()
-        for service in self._device.device_services:
-            service.unsubscribe_callback(self.entity_id)
-        self._device.unsubscribe_callback(self.entity_id)
+        self._device.subscribe_callback(self.unique_id, on_state_changed)
+        self.async_on_remove(partial(self._device.unsubscribe_callback, self.unique_id))
 
     @property
-    def available(self):
+    def device_id(self) -> str:
+        """Return the device id."""
+        return self._device.id
+
+
+class SHCEntity(SHCBaseEntity):
+    """Representation of a SHC device entity."""
+
+    _device: SHCDevice
+
+    def __init__(
+        self, hass: HomeAssistant, device: SHCDevice, parent_id: str, entry_id: str
+    ) -> None:
+        """Initialize generic SHC device."""
+        self._attr_unique_id = device.serial
+        device_info = DeviceInfo(
+            identifiers={(DOMAIN, device.id)},
+            manufacturer=device.manufacturer,
+            model=device.device_model,
+            name=device.name,
+        )
+        # boschshcpy may render the hub identifier (shc_info.unique_id) and a
+        # device's root_device_id differently, so the lookup can miss; link only
+        # when it resolves instead of raising out of setup.
+        if hub := dr.async_get(hass).async_get_device_by_identifier(
+            (DOMAIN, device.root_device_id), entry_id
+        ):
+            device_info.via_device_id = hub.id
+        self._attr_device_info = device_info
+        super().__init__(device=device, parent_id=parent_id, entry_id=entry_id)
+
+    @override
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to SHC events."""
+        await super().async_added_to_hass()
+
+        def on_state_changed() -> None:
+            self.schedule_update_ha_state()
+
+        for service in self._device.device_services:
+            service.subscribe_callback(self.unique_id, on_state_changed)
+            self.async_on_remove(partial(service.unsubscribe_callback, self.unique_id))
+
+    @property
+    @override
+    def available(self) -> bool:
         """Return false if status is unavailable."""
         return self._device.status == "AVAILABLE"

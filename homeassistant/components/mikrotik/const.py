@@ -1,48 +1,80 @@
 """Constants used in the Mikrotik components."""
-from homeassistant.const import Platform
 
-DOMAIN = "mikrotik"
-DEFAULT_NAME = "Mikrotik"
-DEFAULT_API_PORT = 8728
-DEFAULT_DETECTION_TIME = 300
+import logging
+from typing import Final
 
-ATTR_MANUFACTURER = "Mikrotik"
-ATTR_SERIAL_NUMBER = "serial-number"
-ATTR_FIRMWARE = "current-firmware"
-ATTR_MODEL = "model"
+LOGGER = logging.getLogger(__package__)
 
-CONF_ARP_PING = "arp_ping"
-CONF_FORCE_DHCP = "force_dhcp"
-CONF_DETECTION_TIME = "detection_time"
+DOMAIN: Final = "mikrotik"
+DEFAULT_NAME: Final = "Mikrotik"
+DEFAULT_API_PORT: Final = 8728
+DEFAULT_DETECTION_TIME: Final = 300
+
+ATTR_MANUFACTURER: Final = "Mikrotik"
+ATTR_SERIAL_NUMBER: Final = "serial-number"
+ATTR_ROUTERBOARD_FIRMWARE: Final = "current-firmware"
+ATTR_SYSTEM_FIRMWARE: Final = "installed-version"
+
+CONF_ARP_PING: Final = "arp_ping"
+CONF_FORCE_DHCP: Final = "force_dhcp"
+CONF_DETECTION_TIME: Final = "detection_time"
+
+NAME: Final = "name"
+
+ARP: Final = "arp"
+BACKUP: Final = "backup"
+CAPSMAN: Final = "capsman"
+DHCP: Final = "dhcp"
+FIRMWARE_UPDATE: Final = "fw-update"
+HEALTH: Final = "health"
+IDENTITY: Final = "identity"
+INTERFACE: Final = "interface"
+IS_CAPSMAN: Final = "is_capsman"
+IS_WIFI: Final = "is_wifi"
+IS_WIFIWAVE2: Final = "is_wifiwave2"
+IS_WIRELESS: Final = "is_wireless"
+POE: Final = "poe"
+PING: Final = "ping"
+REBOOT: Final = "reboot"
+RESOURCE: Final = "resource"
+ROUTERBOARD_UPDATE: Final = "routerboard-update"
+ROUTERBOARD: Final = "routerboard"
+SHUTDOWN: Final = "shutdown"
+UPDATE: Final = "update"
+WIFI: Final = "wifi"
+WIFIWAVE2: Final = "wifiwave2"
+WIRELESS: Final = "wireless"
 
 
-NAME = "name"
-INFO = "info"
-IDENTITY = "identity"
-ARP = "arp"
-
-CAPSMAN = "capsman"
-DHCP = "dhcp"
-WIRELESS = "wireless"
-IS_WIRELESS = "is_wireless"
-IS_CAPSMAN = "is_capsman"
-
-MIKROTIK_SERVICES = {
+MIKROTIK_SERVICES: Final = {
     ARP: "/ip/arp/getall",
+    BACKUP: "/system/backup/save",
     CAPSMAN: "/caps-man/registration-table/getall",
     DHCP: "/ip/dhcp-server/lease/getall",
+    FIRMWARE_UPDATE: "/system/package/update/install",
+    HEALTH: "/system/health/print",
     IDENTITY: "/system/identity/getall",
-    INFO: "/system/routerboard/getall",
-    WIRELESS: "/interface/wireless/registration-table/getall",
-    IS_WIRELESS: "/interface/wireless/print",
+    INTERFACE: "/interface/print",
     IS_CAPSMAN: "/caps-man/interface/print",
+    IS_WIFI: "/interface/wifi/print",
+    IS_WIFIWAVE2: "/interface/wifiwave2/print",
+    IS_WIRELESS: "/interface/wireless/print",
+    POE: "/interface/ethernet/poe/print",
+    PING: "/ping",
+    REBOOT: "/system/reboot",
+    RESOURCE: "/system/resource/print",
+    ROUTERBOARD_UPDATE: "/system/routerboard/upgrade",
+    ROUTERBOARD: "/system/routerboard/getall",
+    SHUTDOWN: "/system/shutdown",
+    UPDATE: "/system/package/update/print",
+    WIFI: "/interface/wifi/registration-table/print",
+    WIFIWAVE2: "/interface/wifiwave2/registration-table/print",
+    WIRELESS: "/interface/wireless/registration-table/getall",
 }
 
-PLATFORMS = [Platform.DEVICE_TRACKER]
 
-ATTR_DEVICE_TRACKER = [
+ATTR_DEVICE_TRACKER: Final = [
     "comment",
-    "mac-address",
     "ssid",
     "interface",
     "signal-strength",

@@ -1,9 +1,9 @@
 {
   "domain": "blink",
   "name": "Blink",
-  "documentation": "https://www.home-assistant.io/integrations/blink",
-  "requirements": ["blinkpy==0.18.0"],
+  "categories": ["security_safety.cameras"],
   "codeowners": ["@fronzbot"],
+  "config_flow": true,
   "dhcp": [
     {
       "hostname": "blink*",
@@ -12,9 +12,15 @@
     {
       "hostname": "blink*",
       "macaddress": "00037F*"
-    }    
+    },
+    {
+      "hostname": "blink*",
+      "macaddress": "20A171*"
+    }
   ],
-  "config_flow": true,
+  "documentation": "https://www.home-assistant.io/integrations/blink",
+  "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "loggers": ["blinkpy"]
+  "loggers": ["blinkpy"],
+  "requirements": ["blinkpy==0.25.9"]
 }

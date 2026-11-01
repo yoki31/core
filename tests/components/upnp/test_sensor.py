@@ -1,120 +1,145 @@
 """Tests for UPnP/IGD sensor."""
 
 from datetime import timedelta
-from unittest.mock import patch
 
+from async_upnp_client.profiles.igd import IgdDevice, IgdState
 import pytest
+from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 
-from homeassistant.components.upnp import UpnpDataUpdateCoordinator
-from homeassistant.components.upnp.const import (
-    BYTES_RECEIVED,
-    BYTES_SENT,
-    DEFAULT_SCAN_INTERVAL,
-    DOMAIN,
-    PACKETS_RECEIVED,
-    PACKETS_SENT,
-    ROUTER_IP,
-    ROUTER_UPTIME,
-    WAN_STATUS,
-)
+from homeassistant.components.upnp.const import DEFAULT_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant
-import homeassistant.util.dt as dt_util
-
-from .conftest import MockIgdDevice
-
-from tests.common import MockConfigEntry, async_fire_time_changed
+from homeassistant.helpers import entity_registry as er
+from homeassistant.util import dt as dt_util
 
 
-async def test_upnp_sensors(hass: HomeAssistant, setup_integration: MockConfigEntry):
-    """Test normal sensors."""
+@pytest.mark.usefixtures("entity_registry_enabled_by_default")
+async def test_upnp_sensors(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Test sensors."""
     # First poll.
-    b_received_state = hass.states.get("sensor.mock_name_b_received")
-    b_sent_state = hass.states.get("sensor.mock_name_b_sent")
-    packets_received_state = hass.states.get("sensor.mock_name_packets_received")
-    packets_sent_state = hass.states.get("sensor.mock_name_packets_sent")
-    external_ip_state = hass.states.get("sensor.mock_name_external_ip")
-    wan_status_state = hass.states.get("sensor.mock_name_wan_status")
-    assert b_received_state.state == "0"
-    assert b_sent_state.state == "0"
-    assert packets_received_state.state == "0"
-    assert packets_sent_state.state == "0"
-    assert external_ip_state.state == "8.9.10.11"
-    assert wan_status_state.state == "Connected"
+    assert hass.states.get("sensor.mock_name_data_received").state == "0"
+    assert hass.states.get("sensor.mock_name_data_sent").state == "0"
+    assert hass.states.get("sensor.mock_name_packets_received").state == "0"
+    assert hass.states.get("sensor.mock_name_packets_sent").state == "0"
+    assert hass.states.get("sensor.mock_name_external_ip").state == "8.9.10.11"
+    assert hass.states.get("sensor.mock_name_wan_status").state == "Connected"
+    assert hass.states.get("sensor.mock_name_download_speed").state == "unknown"
+    assert hass.states.get("sensor.mock_name_upload_speed").state == "unknown"
+    assert hass.states.get("sensor.mock_name_packet_download_speed").state == "unknown"
+    assert hass.states.get("sensor.mock_name_packet_upload_speed").state == "unknown"
+    assert (
+        hass.states.get("sensor.mock_name_download_speed_no_rollover_handling").state
+        == "unknown"
+    )
+    assert (
+        hass.states.get("sensor.mock_name_upload_speed_no_rollover_handling").state
+        == "unknown"
+    )
+    assert (
+        hass.states.get(
+            "sensor.mock_name_packet_download_speed_no_rollover_handling"
+        ).state
+        == "unknown"
+    )
+    assert (
+        hass.states.get(
+            "sensor.mock_name_packet_upload_speed_no_rollover_handling"
+        ).state
+        == "unknown"
+    )
 
     # Second poll.
-    mock_device: MockIgdDevice = hass.data[DOMAIN][
-        setup_integration.entry_id
-    ].device._igd_device
-    mock_device.traffic_data = {
-        BYTES_RECEIVED: 10240,
-        BYTES_SENT: 20480,
-        PACKETS_RECEIVED: 30,
-        PACKETS_SENT: 40,
-    }
-    mock_device.status_data = {
-        WAN_STATUS: "Disconnected",
-        ROUTER_UPTIME: 100,
-        ROUTER_IP: "",
-    }
+    mock_igd_device: IgdDevice = mock_config_entry.igd_device
+    mock_igd_device.async_get_traffic_and_status_data.return_value = IgdState(
+        timestamp=dt_util.naive_now(),
+        bytes_received=10240,
+        bytes_sent=20480,
+        packets_received=30,
+        packets_sent=40,
+        connection_status="Disconnected",
+        last_connection_error="",
+        uptime=40,
+        external_ip_address="",
+        kibibytes_per_sec_received=10.0,
+        kibibytes_per_sec_sent=20.0,
+        packets_per_sec_received=30.0,
+        packets_per_sec_sent=40.0,
+        kibibytes_per_sec_received_no_rollover=10.0,
+        kibibytes_per_sec_sent_no_rollover=20.0,
+        packets_per_sec_received_no_rollover=30.0,
+        packets_per_sec_sent_no_rollover=40.0,
+        port_mapping_number_of_entries=0,
+    )
+
     now = dt_util.utcnow()
     async_fire_time_changed(hass, now + timedelta(seconds=DEFAULT_SCAN_INTERVAL))
     await hass.async_block_till_done()
 
-    b_received_state = hass.states.get("sensor.mock_name_b_received")
-    b_sent_state = hass.states.get("sensor.mock_name_b_sent")
-    packets_received_state = hass.states.get("sensor.mock_name_packets_received")
-    packets_sent_state = hass.states.get("sensor.mock_name_packets_sent")
-    external_ip_state = hass.states.get("sensor.mock_name_external_ip")
-    wan_status_state = hass.states.get("sensor.mock_name_wan_status")
-    assert b_received_state.state == "10240"
-    assert b_sent_state.state == "20480"
-    assert packets_received_state.state == "30"
-    assert packets_sent_state.state == "40"
-    assert external_ip_state.state == ""
-    assert wan_status_state.state == "Disconnected"
+    assert hass.states.get("sensor.mock_name_data_received").state == "10240"
+    assert hass.states.get("sensor.mock_name_data_sent").state == "20480"
+    assert hass.states.get("sensor.mock_name_packets_received").state == "30"
+    assert hass.states.get("sensor.mock_name_packets_sent").state == "40"
+    assert hass.states.get("sensor.mock_name_external_ip").state == ""
+    assert hass.states.get("sensor.mock_name_wan_status").state == "Disconnected"
+    assert hass.states.get("sensor.mock_name_download_speed").state == "10.0"
+    assert hass.states.get("sensor.mock_name_upload_speed").state == "20.0"
+    assert hass.states.get("sensor.mock_name_packet_download_speed").state == "30.0"
+    assert hass.states.get("sensor.mock_name_packet_upload_speed").state == "40.0"
+    assert (
+        hass.states.get("sensor.mock_name_download_speed_no_rollover_handling").state
+        == "10.0"
+    )
+    assert (
+        hass.states.get("sensor.mock_name_upload_speed_no_rollover_handling").state
+        == "20.0"
+    )
+    assert (
+        hass.states.get(
+            "sensor.mock_name_packet_download_speed_no_rollover_handling"
+        ).state
+        == "30.0"
+    )
+    assert (
+        hass.states.get(
+            "sensor.mock_name_packet_upload_speed_no_rollover_handling"
+        ).state
+        == "40.0"
+    )
 
 
-async def test_derived_upnp_sensors(
-    hass: HomeAssistant, setup_integration: MockConfigEntry
-):
-    """Test derived sensors."""
-    coordinator: UpnpDataUpdateCoordinator = hass.data[DOMAIN][
-        setup_integration.entry_id
-    ]
+async def test_upnp_sensors_no_rollover_disabled_by_default(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """Test no-rollover sensors are disabled by default and can be enabled."""
+    disabled_entity_id = "sensor.mock_name_download_speed_no_rollover_handling"
+    other_disabled_entity_ids = (
+        "sensor.mock_name_upload_speed_no_rollover_handling",
+        "sensor.mock_name_packet_download_speed_no_rollover_handling",
+        "sensor.mock_name_packet_upload_speed_no_rollover_handling",
+    )
 
-    # First poll.
-    kib_s_received_state = hass.states.get("sensor.mock_name_kib_s_received")
-    kib_s_sent_state = hass.states.get("sensor.mock_name_kib_s_sent")
-    packets_s_received_state = hass.states.get("sensor.mock_name_packets_s_received")
-    packets_s_sent_state = hass.states.get("sensor.mock_name_packets_s_sent")
-    assert kib_s_received_state.state == "unknown"
-    assert kib_s_sent_state.state == "unknown"
-    assert packets_s_received_state.state == "unknown"
-    assert packets_s_sent_state.state == "unknown"
+    assert hass.states.get(disabled_entity_id) is None
+    for entity_id in other_disabled_entity_ids:
+        assert hass.states.get(entity_id) is None
 
-    # Second poll.
-    now = dt_util.utcnow()
-    with patch(
-        "homeassistant.components.upnp.device.utcnow",
-        return_value=now + timedelta(seconds=DEFAULT_SCAN_INTERVAL),
-    ):
-        mock_device: MockIgdDevice = coordinator.device._igd_device
-        mock_device.traffic_data = {
-            BYTES_RECEIVED: int(10240 * DEFAULT_SCAN_INTERVAL),
-            BYTES_SENT: int(20480 * DEFAULT_SCAN_INTERVAL),
-            PACKETS_RECEIVED: int(30 * DEFAULT_SCAN_INTERVAL),
-            PACKETS_SENT: int(40 * DEFAULT_SCAN_INTERVAL),
-        }
-        async_fire_time_changed(hass, now + timedelta(seconds=DEFAULT_SCAN_INTERVAL))
-        await hass.async_block_till_done()
+    entry = entity_registry.async_get(disabled_entity_id)
+    assert entry
+    assert entry.disabled
+    assert entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
 
-        kib_s_received_state = hass.states.get("sensor.mock_name_kib_s_received")
-        kib_s_sent_state = hass.states.get("sensor.mock_name_kib_s_sent")
-        packets_s_received_state = hass.states.get(
-            "sensor.mock_name_packets_s_received"
-        )
-        packets_s_sent_state = hass.states.get("sensor.mock_name_packets_s_sent")
-        assert float(kib_s_received_state.state) == pytest.approx(10.0, rel=0.1)
-        assert float(kib_s_sent_state.state) == pytest.approx(20.0, rel=0.1)
-        assert float(packets_s_received_state.state) == pytest.approx(30.0, rel=0.1)
-        assert float(packets_s_sent_state.state) == pytest.approx(40.0, rel=0.1)
+    for entity_id in other_disabled_entity_ids:
+        entry = entity_registry.async_get(entity_id)
+        assert entry
+        assert entry.disabled
+        assert entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+
+    entity_registry.async_update_entity(disabled_entity_id, disabled_by=None)
+    await hass.config_entries.async_reload(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    enabled_state = hass.states.get(disabled_entity_id)
+    assert enabled_state is not None
+    assert enabled_state.state == "unknown"

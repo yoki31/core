@@ -1,16 +1,16 @@
 """Tests for the Remote Python Debugger integration."""
+
 from unittest.mock import patch
 
 import pytest
 
-from homeassistant.components.debugpy import (
-    CONF_HOST,
-    CONF_PORT,
+from homeassistant.components.debugpy.const import (
     CONF_START,
     CONF_WAIT,
     DOMAIN,
     SERVICE_START,
 )
+from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
@@ -18,7 +18,7 @@ from homeassistant.setup import async_setup_component
 @pytest.fixture
 def mock_debugpy():
     """Mock debugpy lib."""
-    with patch("homeassistant.components.debugpy.debugpy") as mocked_debugpy:
+    with patch("homeassistant.components.debugpy.helpers.debugpy") as mocked_debugpy:
         yield mocked_debugpy
 
 

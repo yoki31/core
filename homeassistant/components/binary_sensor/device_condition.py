@@ -1,9 +1,8 @@
 """Implement device conditions for binary sensor."""
-from __future__ import annotations
 
-import voluptuous as vol
+import probatio
 
-from homeassistant.components.device_automation.const import CONF_IS_OFF, CONF_IS_ON
+from homeassistant.components.device_automation import CONF_IS_OFF, CONF_IS_ON
 from homeassistant.const import (
     CONF_CONDITION,
     CONF_ENTITY_ID,
@@ -12,15 +11,15 @@ from homeassistant.const import (
     CONF_TYPE,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import condition, config_validation as cv
-from homeassistant.helpers.entity import get_device_class
-from homeassistant.helpers.entity_registry import (
-    async_entries_for_device,
-    async_get_registry,
+from homeassistant.helpers import (
+    condition,
+    config_validation as cv,
+    entity_registry as er,
 )
+from homeassistant.helpers.entity import get_device_class
 from homeassistant.helpers.typing import ConfigType
 
-from . import DOMAIN, BinarySensorDeviceClass
+from .const import DOMAIN, BinarySensorDeviceClass
 
 # mypy: disallow-any-generics
 
@@ -38,6 +37,8 @@ CONF_IS_CONNECTED = "is_connected"
 CONF_IS_NOT_CONNECTED = "is_not_connected"
 CONF_IS_GAS = "is_gas"
 CONF_IS_NO_GAS = "is_no_gas"
+CONF_IS_GLASS_BREAK = "is_glass_break"
+CONF_IS_NO_GLASS_BREAK = "is_no_glass_break"
 CONF_IS_HOT = "is_hot"
 CONF_IS_NOT_HOT = "is_not_hot"
 CONF_IS_LIGHT = "is_light"
@@ -84,6 +85,7 @@ IS_ON = [
     CONF_IS_COLD,
     CONF_IS_CONNECTED,
     CONF_IS_GAS,
+    CONF_IS_GLASS_BREAK,
     CONF_IS_HOT,
     CONF_IS_LIGHT,
     CONF_IS_NOT_LOCKED,
@@ -124,6 +126,7 @@ IS_OFF = [
     CONF_IS_NOT_UNSAFE,
     CONF_IS_NO_CO,
     CONF_IS_NO_GAS,
+    CONF_IS_NO_GLASS_BREAK,
     CONF_IS_NO_LIGHT,
     CONF_IS_NO_MOTION,
     CONF_IS_NO_PROBLEM,
@@ -167,6 +170,10 @@ ENTITY_CONDITIONS = {
     BinarySensorDeviceClass.GAS: [
         {CONF_TYPE: CONF_IS_GAS},
         {CONF_TYPE: CONF_IS_NO_GAS},
+    ],
+    BinarySensorDeviceClass.GLASS_BREAK: [
+        {CONF_TYPE: CONF_IS_GLASS_BREAK},
+        {CONF_TYPE: CONF_IS_NO_GLASS_BREAK},
     ],
     BinarySensorDeviceClass.HEAT: [
         {CONF_TYPE: CONF_IS_HOT},
@@ -256,9 +263,9 @@ ENTITY_CONDITIONS = {
 
 CONDITION_SCHEMA = cv.DEVICE_CONDITION_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_ENTITY_ID): cv.entity_id,
-        vol.Required(CONF_TYPE): vol.In(IS_OFF + IS_ON),
-        vol.Optional(CONF_FOR): cv.positive_time_period_dict,
+        probatio.Required(CONF_ENTITY_ID): cv.entity_id_or_uuid,
+        probatio.Required(CONF_TYPE): probatio.In(IS_OFF + IS_ON),
+        probatio.Optional(CONF_FOR): cv.positive_time_period_dict,
     }
 )
 
@@ -268,10 +275,10 @@ async def async_get_conditions(
 ) -> list[dict[str, str]]:
     """List device conditions."""
     conditions: list[dict[str, str]] = []
-    entity_registry = await async_get_registry(hass)
+    entity_registry = er.async_get(hass)
     entries = [
         entry
-        for entry in async_entries_for_device(entity_registry, device_id)
+        for entry in er.async_entries_for_device(entity_registry, device_id)
         if entry.domain == DOMAIN
     ]
 
@@ -287,7 +294,7 @@ async def async_get_conditions(
                 **template,
                 "condition": "device",
                 "device_id": device_id,
-                "entity_id": entry.entity_id,
+                "entity_id": entry.id,
                 "domain": DOMAIN,
             }
             for template in templates
@@ -321,10 +328,10 @@ def async_condition_from_config(
 
 async def async_get_condition_capabilities(
     hass: HomeAssistant, config: ConfigType
-) -> dict[str, vol.Schema]:
+) -> dict[str, probatio.Schema]:
     """List condition capabilities."""
     return {
-        "extra_fields": vol.Schema(
-            {vol.Optional(CONF_FOR): cv.positive_time_period_dict}
+        "extra_fields": probatio.Schema(
+            {probatio.Optional(CONF_FOR): cv.positive_time_period_dict}
         )
     }

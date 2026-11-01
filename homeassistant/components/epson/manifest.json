@@ -1,10 +1,12 @@
 {
   "domain": "epson",
   "name": "Epson",
+  "categories": ["media_entertainment.tv_streaming"],
+  "codeowners": ["@pszafer"],
   "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/epson",
-  "requirements": ["epson-projector==0.4.2"],
-  "codeowners": ["@pszafer"],
+  "integration_type": "device",
   "iot_class": "local_polling",
-  "loggers": ["epson_projector"]
+  "loggers": ["epson_projector"],
+  "requirements": ["epson-projector==0.6.0"]
 }

@@ -1,17 +1,21 @@
 {
   "config": {
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_service%]"
+    },
+    "error": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_service%]"
+    },
     "step": {
       "user": {
-        "title": "[%key:common::config_flow::data::location%]",
-        "description": "Enter your location to use weather data from the Met Éireann Public Weather Forecast API",
         "data": {
-          "name": "[%key:common::config_flow::data::name%]",
-          "latitude": "[%key:common::config_flow::data::latitude%]",
-          "longitude": "[%key:common::config_flow::data::longitude%]",
-          "elevation": "[%key:common::config_flow::data::elevation%]"
-        }
+          "elevation": "[%key:common::config_flow::data::elevation%]",
+          "location": "[%key:common::config_flow::data::location%]",
+          "name": "[%key:common::config_flow::data::name%]"
+        },
+        "description": "Enter your location to use weather data from the Met Éireann Public Weather Forecast API",
+        "title": "[%key:common::config_flow::data::location%]"
       }
-    },
-    "error": { "already_configured": "[%key:common::config_flow::abort::already_configured_service%]" }
+    }
   }
 }

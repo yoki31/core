@@ -1,9 +1,17 @@
 """Config flow to configure demo component."""
-import voluptuous as vol
 
-from homeassistant import config_entries
+from typing import Any, override
+
+import probatio
+
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.core import callback
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 
 from . import DOMAIN
 
@@ -14,35 +22,41 @@ CONF_SELECT = "select"
 CONF_MULTISELECT = "multi"
 
 
-class DemoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class DemoConfigFlow(ConfigFlow, domain=DOMAIN):
     """Demo configuration flow."""
 
     VERSION = 1
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry):
+    @override
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> OptionsFlowHandler:
         """Get the options flow for this handler."""
         return OptionsFlowHandler(config_entry)
 
-    async def async_step_import(self, import_info):
+    async def async_step_import(self, import_data: dict[str, Any]) -> ConfigFlowResult:
         """Set the config entry up from yaml."""
-        return self.async_create_entry(title="Demo", data={})
+        return self.async_create_entry(title="Demo", data=import_data)
 
 
-class OptionsFlowHandler(config_entries.OptionsFlow):
+class OptionsFlowHandler(OptionsFlow):
     """Handle options."""
 
-    def __init__(self, config_entry):
+    def __init__(self, config_entry: ConfigEntry) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
         self.options = dict(config_entry.options)
 
-    async def async_step_init(self, user_input=None):
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Manage the options."""
         return await self.async_step_options_1()
 
-    async def async_step_options_1(self, user_input=None):
+    async def async_step_options_1(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Manage the options."""
         if user_input is not None:
             self.options.update(user_input)
@@ -50,14 +64,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="options_1",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required("constant"): "Constant Value",
-                    vol.Optional(
+                    probatio.Required("constant"): "Constant Value",
+                    probatio.Optional(
                         CONF_BOOLEAN,
                         default=self.config_entry.options.get(CONF_BOOLEAN, False),
                     ): bool,
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_INT,
                         default=self.config_entry.options.get(CONF_INT, 10),
                     ): int,
@@ -65,7 +79,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             ),
         )
 
-    async def async_step_options_2(self, user_input=None):
+    async def async_step_options_2(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Manage the options 2."""
         if user_input is not None:
             self.options.update(user_input)
@@ -73,20 +89,20 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="options_2",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_STRING,
                         default=self.config_entry.options.get(
                             CONF_STRING,
                             "Default",
                         ),
                     ): str,
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_SELECT,
                         default=self.config_entry.options.get(CONF_SELECT, "default"),
-                    ): vol.In(["default", "other"]),
-                    vol.Optional(
+                    ): probatio.In(["default", "other"]),
+                    probatio.Optional(
                         CONF_MULTISELECT,
                         default=self.config_entry.options.get(
                             CONF_MULTISELECT, ["default"]
@@ -96,6 +112,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             ),
         )
 
-    async def _update_options(self):
+    async def _update_options(self) -> ConfigFlowResult:
         """Update config entry options."""
         return self.async_create_entry(title="", data=self.options)

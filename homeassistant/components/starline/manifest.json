@@ -1,10 +1,12 @@
 {
   "domain": "starline",
   "name": "StarLine",
+  "categories": ["vehicles_transport.cars_evs"],
+  "codeowners": ["@anonym-tsk"],
   "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/starline",
-  "requirements": ["starline==0.1.5"],
-  "codeowners": ["@anonym-tsk"],
+  "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "loggers": ["starline"]
+  "loggers": ["starline"],
+  "requirements": ["starline==0.1.5"]
 }

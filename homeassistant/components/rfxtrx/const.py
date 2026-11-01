@@ -2,12 +2,14 @@
 
 CONF_DATA_BITS = "data_bits"
 CONF_AUTOMATIC_ADD = "automatic_add"
-CONF_SIGNAL_REPETITIONS = "signal_repetitions"
 CONF_OFF_DELAY = "off_delay"
 CONF_VENETIAN_BLIND_MODE = "venetian_blind_mode"
+CONF_PROTOCOLS = "protocols"
 
-CONF_REMOVE_DEVICE = "remove_device"
+CONF_EVENT_CODE = "event_code"
 CONF_REPLACE_DEVICE = "replace_device"
+
+SUBENTRY_TYPE_DEVICE = "device"
 
 CONST_VENETIAN_BLIND_MODE_DEFAULT = "Unknown"
 CONST_VENETIAN_BLIND_MODE_EU = "EU"
@@ -44,4 +46,8 @@ DEVICE_PACKET_TYPE_LIGHTING4 = 0x13
 
 EVENT_RFXTRX_EVENT = "rfxtrx_event"
 
-DATA_RFXOBJECT = "rfxobject"
+
+DOMAIN = "rfxtrx"
+
+SIGNAL_EVENT = f"{DOMAIN}_event"
+SIGNAL_DEVICE_ADDED = f"{DOMAIN}_device_added"

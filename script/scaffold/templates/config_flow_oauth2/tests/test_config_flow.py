@@ -1,7 +1,15 @@
 """Test the NEW_NAME config flow."""
+
 from unittest.mock import patch
 
-from homeassistant import config_entries, setup
+import pytest
+
+from homeassistant import config_entries
+from homeassistant.components.application_credentials import (
+    DOMAIN as APPLICATION_CREDENTIALS_DOMAIN,
+    ClientCredential,
+    async_import_client_credential,
+)
 from homeassistant.components.NEW_DOMAIN.const import (
     DOMAIN,
     OAUTH2_AUTHORIZE,
@@ -9,9 +17,21 @@ from homeassistant.components.NEW_DOMAIN.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.setup import async_setup_component
 
 CLIENT_ID = "1234"
 CLIENT_SECRET = "5678"
+
+
+@pytest.fixture
+async def setup_credentials(hass: HomeAssistant) -> None:
+    """Fixture to setup credentials."""
+    assert await async_setup_component(hass, APPLICATION_CREDENTIALS_DOMAIN, {})
+    await async_import_client_credential(
+        hass,
+        DOMAIN,
+        ClientCredential(CLIENT_ID, CLIENT_SECRET),
+    )
 
 
 async def test_full_flow(
@@ -19,21 +39,13 @@ async def test_full_flow(
     hass_client_no_auth,
     aioclient_mock,
     current_request_with_host,
+    setup_credentials,
 ) -> None:
     """Check full flow."""
-    assert await setup.async_setup_component(
-        hass,
-        "NEW_DOMAIN",
-        {
-            "NEW_DOMAIN": {"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET},
-            "http": {"base_url": "https://example.com"},
-        },
-    )
-
     result = await hass.config_entries.flow.async_init(
-        "NEW_DOMAIN", context={"source": config_entries.SOURCE_USER}
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
-    state = config_entry_oauth2_flow._encode_jwt(
+    state = config_entry_oauth2_flow._encode_jwt(  # noqa: SLF001
         hass,
         {
             "flow_id": result["flow_id"],
@@ -63,7 +75,7 @@ async def test_full_flow(
     )
 
     with patch(
-        "homeassistant.components.NEW_DOMAIN.async_setup_entry", return_value=True
+        "homeassistant.components.NEW_DOMAIN.async_setup_entry", return_value=None
     ) as mock_setup:
         await hass.config_entries.flow.async_configure(result["flow_id"])
 

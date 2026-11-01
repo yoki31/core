@@ -1,26 +1,24 @@
 """Netatmo Media Source Implementation."""
-from __future__ import annotations
 
 import datetime as dt
 import logging
 import re
+from typing import override
 
-from homeassistant.components.media_player.const import (
-    MEDIA_CLASS_DIRECTORY,
-    MEDIA_CLASS_VIDEO,
-    MEDIA_TYPE_VIDEO,
-)
-from homeassistant.components.media_player.errors import BrowseError
-from homeassistant.components.media_source.error import MediaSourceError, Unresolvable
-from homeassistant.components.media_source.models import (
+from homeassistant.components.media_player import BrowseError, MediaClass, MediaType
+from homeassistant.components.media_source import (
     BrowseMediaSource,
     MediaSource,
+    MediaSourceError,
     MediaSourceItem,
     PlayMedia,
+    Unresolvable,
 )
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 
-from .const import DATA_CAMERAS, DATA_EVENTS, DOMAIN, MANUFACTURER
+from .const import DOMAIN, MANUFACTURER
+from .coordinator import NetatmoConfigEntry, NetatmoDataHandler, async_get_loaded_entry
 
 _LOGGER = logging.getLogger(__name__)
 MIME_TYPE = "application/x-mpegURL"
@@ -32,7 +30,7 @@ class IncompatibleMediaSource(MediaSourceError):
 
 async def async_get_media_source(hass: HomeAssistant) -> NetatmoSource:
     """Set up Netatmo media source."""
-    return NetatmoSource(hass)
+    return NetatmoSource(hass, async_get_loaded_entry(hass))
 
 
 class NetatmoSource(MediaSource):
@@ -40,18 +38,33 @@ class NetatmoSource(MediaSource):
 
     name: str = MANUFACTURER
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, entry: NetatmoConfigEntry | None) -> None:
         """Initialize Netatmo source."""
         super().__init__(DOMAIN)
         self.hass = hass
-        self.events = self.hass.data[DOMAIN][DATA_EVENTS]
+        self.entry = entry
 
+    @property
+    def _data_handler(self) -> NetatmoDataHandler | None:
+        """Return the data handler of the config entry, if it is loaded."""
+        if self.entry is None or self.entry.state is not ConfigEntryState.LOADED:
+            return None
+        return self.entry.runtime_data
+
+    @property
+    def events(self) -> dict[str, dict]:
+        """Return the camera events."""
+        data_handler = self._data_handler
+        return data_handler.events if data_handler else {}
+
+    @override
     async def async_resolve_media(self, item: MediaSourceItem) -> PlayMedia:
         """Resolve media to a url."""
         _, camera_id, event_id = async_parse_identifier(item)
         url = self.events[camera_id][event_id]["media_url"]
         return PlayMedia(url, MIME_TYPE)
 
+    @override
     async def async_browse_media(self, item: MediaSourceItem) -> BrowseMediaSource:
         """Return media."""
         try:
@@ -77,24 +90,21 @@ class NetatmoSource(MediaSource):
         self, source: str, camera_id: str, event_id: int | None = None
     ) -> BrowseMediaSource:
         if event_id and event_id in self.events[camera_id]:
-            created = dt.datetime.fromtimestamp(event_id)
-            if self.events[camera_id][event_id]["type"] == "outdoor":
-                thumbnail = (
-                    self.events[camera_id][event_id]["event_list"][0]
-                    .get("snapshot", {})
-                    .get("url")
-                )
-                message = remove_html_tags(
-                    self.events[camera_id][event_id]["event_list"][0]["message"]
-                )
-            else:
-                thumbnail = (
-                    self.events[camera_id][event_id].get("snapshot", {}).get("url")
-                )
-                message = remove_html_tags(self.events[camera_id][event_id]["message"])
+            created = dt.datetime.fromtimestamp(
+                self.events[camera_id][event_id]["event_time"]
+            )
+            thumbnail = self.events[camera_id][event_id].get("snapshot", {}).get("url")
+            message = remove_html_tags(
+                self.events[camera_id][event_id].get("message", "")
+            )
             title = f"{created} - {message}"
         else:
-            title = self.hass.data[DOMAIN][DATA_CAMERAS].get(camera_id, MANUFACTURER)
+            data_handler = self._data_handler
+            title = (
+                data_handler.cameras.get(camera_id, MANUFACTURER)
+                if data_handler
+                else MANUFACTURER
+            )
             thumbnail = None
 
         if event_id:
@@ -102,13 +112,13 @@ class NetatmoSource(MediaSource):
         else:
             path = f"{source}/{camera_id}"
 
-        media_class = MEDIA_CLASS_DIRECTORY if event_id is None else MEDIA_CLASS_VIDEO
+        media_class = MediaClass.DIRECTORY if event_id is None else MediaClass.VIDEO
 
         media = BrowseMediaSource(
             domain=DOMAIN,
             identifier=path,
             media_class=media_class,
-            media_content_type=MEDIA_TYPE_VIDEO,
+            media_content_type=MediaType.VIDEO,
             title=title,
             can_play=bool(
                 event_id and self.events[camera_id][event_id].get("media_url")

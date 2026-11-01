@@ -1,17 +1,18 @@
 """Trace support for automation."""
-from __future__ import annotations
 
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, override
 
-from homeassistant.components.trace import ActionTrace, async_store_trace
-from homeassistant.components.trace.const import CONF_STORED_TRACES
-from homeassistant.core import Context
+from homeassistant.components.trace import (
+    CONF_STORED_TRACES,
+    ActionTrace,
+    async_store_trace,
+)
+from homeassistant.core import Context, HomeAssistant
+from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN
-
-# mypy: allow-untyped-calls, allow-untyped-defs
-# mypy: no-check-untyped-defs, no-warn-return-any
 
 
 class AutomationTrace(ActionTrace):
@@ -21,19 +22,23 @@ class AutomationTrace(ActionTrace):
 
     def __init__(
         self,
-        item_id: str,
-        config: dict[str, Any],
-        blueprint_inputs: dict[str, Any],
+        item_id: str | None,
+        config: ConfigType | None,
+        blueprint_inputs: ConfigType | None,
         context: Context,
+        *,
+        not_triggered: bool = False,
     ) -> None:
         """Container for automation trace."""
         super().__init__(item_id, config, blueprint_inputs, context)
         self._trigger_description: str | None = None
+        self.not_triggered = not_triggered
 
     def set_trigger_description(self, trigger: str) -> None:
         """Set trigger description."""
         self._trigger_description = trigger
 
+    @override
     def as_short_dict(self) -> dict[str, Any]:
         """Return a brief dictionary version of this AutomationTrace."""
         if self._short_dict:
@@ -46,18 +51,28 @@ class AutomationTrace(ActionTrace):
 
 @contextmanager
 def trace_automation(
-    hass, automation_id, config, blueprint_inputs, context, trace_config
-):
+    hass: HomeAssistant,
+    automation_id: str | None,
+    config: ConfigType | None,
+    blueprint_inputs: ConfigType | None,
+    context: Context,
+    trace_config: ConfigType,
+    *,
+    not_triggered: bool = False,
+) -> Generator[AutomationTrace]:
     """Trace action execution of automation with automation_id."""
-    trace = AutomationTrace(automation_id, config, blueprint_inputs, context)
-    async_store_trace(hass, trace, trace_config[CONF_STORED_TRACES])
+    trace = AutomationTrace(
+        automation_id, config, blueprint_inputs, context, not_triggered=not_triggered
+    )
+    if automation_id:
+        async_store_trace(hass, trace, trace_config[CONF_STORED_TRACES])
 
     try:
         yield trace
     except Exception as ex:
         if automation_id:
             trace.set_error(ex)
-        raise ex
+        raise
     finally:
         if automation_id:
             trace.finished()

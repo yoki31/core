@@ -2,21 +2,20 @@
 
 Sending HOTP through notify service
 """
-from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
 import logging
-from typing import Any
+from typing import Any, cast, override
 
 import attr
-import voluptuous as vol
+import probatio
 
 from homeassistant.const import CONF_EXCLUDE, CONF_INCLUDE
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import ServiceNotFound
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.storage import Store
 
 from . import (
     MULTI_FACTOR_AUTH_MODULE_SCHEMA,
@@ -25,17 +24,23 @@ from . import (
     SetupFlow,
 )
 
-REQUIREMENTS = ["pyotp==2.6.0"]
+REQUIREMENTS = ["pyotp==2.10.0"]
 
 CONF_MESSAGE = "message"
 
 CONFIG_SCHEMA = MULTI_FACTOR_AUTH_MODULE_SCHEMA.extend(
     {
-        vol.Optional(CONF_INCLUDE): vol.All(cv.ensure_list, [cv.string]),
-        vol.Optional(CONF_EXCLUDE): vol.All(cv.ensure_list, [cv.string]),
-        vol.Optional(CONF_MESSAGE, default="{} is your Home Assistant login code"): str,
+        probatio.Optional(CONF_INCLUDE): probatio.All(
+            probatio.EnsureList(), [cv.string]
+        ),
+        probatio.Optional(CONF_EXCLUDE): probatio.All(
+            probatio.EnsureList(), [cv.string]
+        ),
+        probatio.Optional(
+            CONF_MESSAGE, default="{} is your Home Assistant login code"
+        ): str,
     },
-    extra=vol.PREVENT_EXTRA,
+    extra=probatio.PREVENT_EXTRA,
 )
 
 STORAGE_VERSION = 1
@@ -50,28 +55,28 @@ _LOGGER = logging.getLogger(__name__)
 
 def _generate_secret() -> str:
     """Generate a secret."""
-    import pyotp  # pylint: disable=import-outside-toplevel
+    import pyotp  # noqa: PLC0415
 
     return str(pyotp.random_base32())
 
 
 def _generate_random() -> int:
     """Generate a 32 digit number."""
-    import pyotp  # pylint: disable=import-outside-toplevel
+    import pyotp  # noqa: PLC0415
 
     return int(pyotp.random_base32(length=32, chars=list("1234567890")))
 
 
 def _generate_otp(secret: str, count: int) -> str:
     """Generate one time password."""
-    import pyotp  # pylint: disable=import-outside-toplevel
+    import pyotp  # noqa: PLC0415
 
     return str(pyotp.HOTP(secret).at(count))
 
 
 def _verify_otp(secret: str, otp: str, count: int) -> bool:
     """Verify one time password."""
-    import pyotp  # pylint: disable=import-outside-toplevel
+    import pyotp  # noqa: PLC0415
 
     return bool(pyotp.HOTP(secret).verify(otp, count))
 
@@ -86,7 +91,7 @@ class NotifySetting:
     target: str | None = attr.ib(default=None)
 
 
-_UsersDict = dict[str, NotifySetting]
+type _UsersDict = dict[str, NotifySetting]
 
 
 @MULTI_FACTOR_AUTH_MODULES.register("notify")
@@ -99,8 +104,8 @@ class NotifyAuthModule(MultiFactorAuthModule):
         """Initialize the user data store."""
         super().__init__(hass, config)
         self._user_settings: _UsersDict | None = None
-        self._user_store = hass.helpers.storage.Store(
-            STORAGE_VERSION, STORAGE_KEY, private=True, atomic_writes=True
+        self._user_store = Store[dict[str, dict[str, Any]]](
+            hass, STORAGE_VERSION, STORAGE_KEY, private=True, atomic_writes=True
         )
         self._include = config.get(CONF_INCLUDE, [])
         self._exclude = config.get(CONF_EXCLUDE, [])
@@ -108,9 +113,10 @@ class NotifyAuthModule(MultiFactorAuthModule):
         self._init_lock = asyncio.Lock()
 
     @property
-    def input_schema(self) -> vol.Schema:
+    @override
+    def input_schema(self) -> probatio.Schema:
         """Validate login flow input data."""
-        return vol.Schema({vol.Required(INPUT_FIELD_CODE): str})
+        return probatio.Schema({probatio.Required(INPUT_FIELD_CODE): str})
 
     async def _async_load(self) -> None:
         """Load stored data."""
@@ -119,7 +125,7 @@ class NotifyAuthModule(MultiFactorAuthModule):
                 return
 
             if (data := await self._user_store.async_load()) is None:
-                data = {STORAGE_USERS: {}}
+                data = cast(dict[str, dict[str, Any]], {STORAGE_USERS: {}})
 
             self._user_settings = {
                 user_id: NotifySetting(**setting)
@@ -151,7 +157,7 @@ class NotifyAuthModule(MultiFactorAuthModule):
         """Return list of notify services."""
         unordered_services = set()
 
-        for service in self.hass.services.async_services().get("notify", {}):
+        for service in self.hass.services.async_services_for_domain("notify"):
             if service not in self._exclude:
                 unordered_services.add(service)
 
@@ -160,7 +166,8 @@ class NotifyAuthModule(MultiFactorAuthModule):
 
         return sorted(unordered_services)
 
-    async def async_setup_flow(self, user_id: str) -> SetupFlow:
+    @override
+    async def async_setup_flow(self, user_id: str) -> NotifySetupFlow:
         """Return a data entry flow handler for setup module.
 
         Mfa module should extend SetupFlow
@@ -169,6 +176,7 @@ class NotifyAuthModule(MultiFactorAuthModule):
             self, self.input_schema, user_id, self.aync_get_available_notify_services()
         )
 
+    @override
     async def async_setup_user(self, user_id: str, setup_data: Any) -> Any:
         """Set up auth module for user."""
         if self._user_settings is None:
@@ -182,6 +190,7 @@ class NotifyAuthModule(MultiFactorAuthModule):
 
         await self._async_save()
 
+    @override
     async def async_depose_user(self, user_id: str) -> None:
         """Depose auth module for user."""
         if self._user_settings is None:
@@ -191,6 +200,7 @@ class NotifyAuthModule(MultiFactorAuthModule):
         if self._user_settings.pop(user_id, None):
             await self._async_save()
 
+    @override
     async def async_is_user_setup(self, user_id: str) -> bool:
         """Return whether user is setup."""
         if self._user_settings is None:
@@ -199,6 +209,7 @@ class NotifyAuthModule(MultiFactorAuthModule):
 
         return user_id in self._user_settings
 
+    @override
     async def async_validate(self, user_id: str, user_input: dict[str, Any]) -> bool:
         """Return True if validation passed."""
         if self._user_settings is None:
@@ -251,7 +262,7 @@ class NotifyAuthModule(MultiFactorAuthModule):
 
         await self.async_notify(
             code,
-            notify_setting.notify_service,  # type: ignore
+            notify_setting.notify_service,  # type: ignore[arg-type]
             notify_setting.target,
         )
 
@@ -266,26 +277,25 @@ class NotifyAuthModule(MultiFactorAuthModule):
         await self.hass.services.async_call("notify", notify_service, data)
 
 
-class NotifySetupFlow(SetupFlow):
+class NotifySetupFlow(SetupFlow[NotifyAuthModule]):
     """Handler for the setup flow."""
 
     def __init__(
         self,
         auth_module: NotifyAuthModule,
-        setup_schema: vol.Schema,
+        setup_schema: probatio.Schema,
         user_id: str,
         available_notify_services: list[str],
     ) -> None:
         """Initialize the setup flow."""
         super().__init__(auth_module, setup_schema, user_id)
-        # to fix typing complaint
-        self._auth_module: NotifyAuthModule = auth_module
         self._available_notify_services = available_notify_services
         self._secret: str | None = None
         self._count: int | None = None
         self._notify_service: str | None = None
         self._target: str | None = None
 
+    @override
     async def async_step_init(
         self, user_input: dict[str, str] | None = None
     ) -> FlowResult:
@@ -304,13 +314,16 @@ class NotifySetupFlow(SetupFlow):
         if not self._available_notify_services:
             return self.async_abort(reason="no_available_service")
 
-        schema: dict[str, Any] = OrderedDict()
-        schema["notify_service"] = vol.In(self._available_notify_services)
-        schema["target"] = vol.Optional(str)
-
-        return self.async_show_form(
-            step_id="init", data_schema=vol.Schema(schema), errors=errors
+        schema = probatio.Schema(
+            {
+                probatio.Required("notify_service"): probatio.In(
+                    self._available_notify_services
+                ),
+                probatio.Optional("target"): str,
+            }
         )
+
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
 
     async def async_step_setup(
         self, user_input: dict[str, str] | None = None
@@ -319,6 +332,7 @@ class NotifySetupFlow(SetupFlow):
         errors: dict[str, str] = {}
 
         hass = self._auth_module.hass
+        assert self._secret and self._count
         if user_input:
             verified = await hass.async_add_executor_job(
                 _verify_otp, self._secret, user_input["code"], self._count
@@ -328,12 +342,11 @@ class NotifySetupFlow(SetupFlow):
                     self._user_id,
                     {"notify_service": self._notify_service, "target": self._target},
                 )
-                return self.async_create_entry(title=self._auth_module.name, data={})
+                return self.async_create_entry(data={})
 
             errors["base"] = "invalid_code"
 
         # generate code every time, no retry logic
-        assert self._secret and self._count
         code = await hass.async_add_executor_job(
             _generate_otp, self._secret, self._count
         )

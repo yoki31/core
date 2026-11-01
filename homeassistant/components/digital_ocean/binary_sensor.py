@@ -1,22 +1,21 @@
 """Support for monitoring the state of Digital Ocean droplets."""
-from __future__ import annotations
 
 import logging
+from typing import Any, override
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.binary_sensor import (
-    PLATFORM_SCHEMA,
+    PLATFORM_SCHEMA as BINARY_SENSOR_PLATFORM_SCHEMA,
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
-from homeassistant.const import ATTR_ATTRIBUTION
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from . import (
+from .const import (
     ATTR_CREATED_AT,
     ATTR_DROPLET_ID,
     ATTR_DROPLET_NAME,
@@ -34,8 +33,8 @@ from . import (
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_NAME = "Droplet"
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {vol.Required(CONF_DROPLETS): vol.All(cv.ensure_list, [cv.string])}
+PLATFORM_SCHEMA = BINARY_SENSOR_PLATFORM_SCHEMA.extend(
+    {probatio.Required(CONF_DROPLETS): probatio.All(probatio.EnsureList(), [cv.string])}
 )
 
 
@@ -64,7 +63,10 @@ def setup_platform(
 class DigitalOceanBinarySensor(BinarySensorEntity):
     """Representation of a Digital Ocean droplet sensor."""
 
-    def __init__(self, do, droplet_id):  # pylint: disable=invalid-name
+    _attr_attribution = ATTRIBUTION
+    _attr_device_class = BinarySensorDeviceClass.MOVING
+
+    def __init__(self, do, droplet_id):
         """Initialize a new Digital Ocean sensor."""
         self._digital_ocean = do
         self._droplet_id = droplet_id
@@ -72,25 +74,22 @@ class DigitalOceanBinarySensor(BinarySensorEntity):
         self.data = None
 
     @property
+    @override
     def name(self):
         """Return the name of the sensor."""
         return self.data.name
 
     @property
-    def is_on(self):
+    @override
+    def is_on(self) -> bool:
         """Return true if the binary sensor is on."""
         return self.data.status == "active"
 
     @property
-    def device_class(self):
-        """Return the class of this sensor."""
-        return BinarySensorDeviceClass.MOVING
-
-    @property
-    def extra_state_attributes(self):
+    @override
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes of the Digital Ocean droplet."""
         return {
-            ATTR_ATTRIBUTION: ATTRIBUTION,
             ATTR_CREATED_AT: self.data.created_at,
             ATTR_DROPLET_ID: self.data.id,
             ATTR_DROPLET_NAME: self.data.name,
@@ -102,7 +101,7 @@ class DigitalOceanBinarySensor(BinarySensorEntity):
             ATTR_VCPUS: self.data.vcpus,
         }
 
-    def update(self):
+    def update(self) -> None:
         """Update state of sensor."""
         self._digital_ocean.update()
 

@@ -1,20 +1,26 @@
 """Details about the built-in battery."""
-from __future__ import annotations
 
 import logging
 import os
+from typing import Any, override
 
 from batinfo import Batteries
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.sensor import (
-    PLATFORM_SCHEMA,
+    PLATFORM_SCHEMA as SENSOR_PLATFORM_SCHEMA,
     SensorDeviceClass,
     SensorEntity,
 )
-from homeassistant.const import ATTR_NAME, CONF_NAME, PERCENTAGE
+from homeassistant.const import (
+    ATTR_MANUFACTURER,
+    ATTR_NAME,
+    ATTR_SERIAL_NUMBER,
+    CONF_NAME,
+    PERCENTAGE,
+)
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
@@ -28,10 +34,8 @@ ATTR_CYCLE_COUNT = "cycle_count"
 ATTR_ENERGY_FULL = "energy_full"
 ATTR_ENERGY_FULL_DESIGN = "energy_full_design"
 ATTR_ENERGY_NOW = "energy_now"
-ATTR_MANUFACTURER = "manufacturer"
 ATTR_MODEL_NAME = "model_name"
 ATTR_POWER_NOW = "power_now"
-ATTR_SERIAL_NUMBER = "serial_number"
 ATTR_STATUS = "status"
 ATTR_VOLTAGE_MIN_DESIGN = "voltage_min_design"
 ATTR_VOLTAGE_NOW = "voltage_now"
@@ -49,11 +53,11 @@ DEFAULT_SYSTEM = "linux"
 
 SYSTEMS = ["android", "linux"]
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+PLATFORM_SCHEMA = SENSOR_PLATFORM_SCHEMA.extend(
     {
-        vol.Optional(CONF_BATTERY, default=DEFAULT_BATTERY): cv.positive_int,
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-        vol.Optional(CONF_SYSTEM, default=DEFAULT_SYSTEM): vol.In(SYSTEMS),
+        probatio.Optional(CONF_BATTERY, default=DEFAULT_BATTERY): cv.positive_int,
+        probatio.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        probatio.Optional(CONF_SYSTEM, default=DEFAULT_SYSTEM): probatio.In(SYSTEMS),
     }
 )
 
@@ -97,7 +101,8 @@ class LinuxBatterySensor(SensorEntity):
         self._system = system
 
     @property
-    def extra_state_attributes(self):
+    @override
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes of the sensor."""
         if self._system == "android":
             return {
@@ -124,7 +129,7 @@ class LinuxBatterySensor(SensorEntity):
             ATTR_VOLTAGE_NOW: self._battery_stat.voltage_now,
         }
 
-    def update(self):
+    def update(self) -> None:
         """Get the latest data and updates the states."""
         self._battery.update()
         self._battery_stat = self._battery.stat[self._battery_id]

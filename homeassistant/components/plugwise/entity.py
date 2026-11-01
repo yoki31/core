@@ -1,75 +1,92 @@
 """Generic Plugwise Entity Class."""
-from __future__ import annotations
 
-from plugwise.smile import Smile
+from typing import override
 
-from homeassistant.const import (
-    ATTR_CONFIGURATION_URL,
-    ATTR_MODEL,
-    ATTR_VIA_DEVICE,
-    CONF_HOST,
+from plugwise import GwEntityData
+
+from homeassistant.const import ATTR_NAME, CONF_HOST
+from homeassistant.helpers.device_registry import (
+    CONNECTION_NETWORK_MAC,
+    CONNECTION_ZIGBEE,
+    DeviceInfo,
+    async_get_device_id_by_identifier,
 )
-from homeassistant.core import callback
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.update_coordinator import (
-    CoordinatorEntity,
-    DataUpdateCoordinator,
-)
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import AVAILABLE, DOMAIN
+from .coordinator import PlugwiseDataUpdateCoordinator
 
 
-class PlugwiseEntity(CoordinatorEntity):
+class PlugwiseEntity(CoordinatorEntity[PlugwiseDataUpdateCoordinator]):
     """Represent a PlugWise Entity."""
 
-    _model: str | None = None
+    _attr_has_entity_name = True
 
     def __init__(
-        self, api: Smile, coordinator: DataUpdateCoordinator, name: str, dev_id: str
+        self,
+        coordinator: PlugwiseDataUpdateCoordinator,
+        device_id: str,
     ) -> None:
         """Initialise the gateway."""
         super().__init__(coordinator)
+        self._dev_id = device_id
 
-        self._api = api
-        self._name = name
-        self._dev_id = dev_id
-        self._entity_name = self._name
+        api = coordinator.api
+        gateway_id = api.gateway_id
+        entry = coordinator.config_entry
 
-    @property
-    def name(self) -> str | None:
-        """Return the name of the entity, if any."""
-        return self._name
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return the device information."""
-        device_information = DeviceInfo(
-            identifiers={(DOMAIN, self._dev_id)},
-            name=self._entity_name,
-            manufacturer="Plugwise",
+        # Link configuration-URL for the gateway device
+        configuration_url = (
+            f"http://{entry.data[CONF_HOST]}"
+            if device_id == gateway_id and entry
+            else None
         )
 
-        if entry := self.coordinator.config_entry:
-            device_information[
-                ATTR_CONFIGURATION_URL
-            ] = f"http://{entry.data[CONF_HOST]}"
+        # Build connections set
+        connections = {
+            (CONNECTION_NETWORK_MAC, mac_address)
+            for mac_address in (
+                self.device.get("mac_address"),
+                self.device.get("wifi_mac_address"),
+            )
+            if mac_address is not None
+        }
+        if zigbee_mac := self.device.get("zigbee_mac_address"):
+            connections.add((CONNECTION_ZIGBEE, zigbee_mac))
 
-        if self._model is not None:
-            device_information[ATTR_MODEL] = self._model.replace("_", " ").title()
-
-        if self._dev_id != self._api.gateway_id:
-            device_information[ATTR_VIA_DEVICE] = (DOMAIN, str(self._api.gateway_id))
-
-        return device_information
-
-    async def async_added_to_hass(self) -> None:
-        """Subscribe to updates."""
-        self._async_process_data()
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self._async_process_data)
+        # Set base device info
+        self._attr_device_info = DeviceInfo(
+            configuration_url=configuration_url,
+            identifiers={(DOMAIN, device_id)},
+            connections=connections,
+            manufacturer=self.device.get("vendor"),
+            model=self.device.get("model"),
+            model_id=self.device.get("model_id"),
+            name=api.smile.name,
+            sw_version=self.device.get("firmware"),
+            hw_version=self.device.get("hardware"),
         )
 
-    @callback
-    def _async_process_data(self) -> None:
-        """Interpret and process API data."""
-        raise NotImplementedError
+        # Add extra info if not the gateway device
+        if device_id != gateway_id:
+            self._attr_device_info.name = self.device.get(ATTR_NAME)
+            self._attr_device_info.via_device_id = async_get_device_id_by_identifier(
+                coordinator.hass,
+                (DOMAIN, gateway_id),
+                config_entry_id=entry.entry_id,
+            )
+
+    @property
+    @override
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return (
+            self._dev_id in self.coordinator.data
+            and (AVAILABLE not in self.device or self.device[AVAILABLE] is True)
+            and super().available
+        )
+
+    @property
+    def device(self) -> GwEntityData:
+        """Return data for this device."""
+        return self.coordinator.data[self._dev_id]

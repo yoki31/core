@@ -1,31 +1,32 @@
 """Support for Taps Affs."""
-from __future__ import annotations
 
 from datetime import timedelta
 import logging
+from typing import override
 
+import probatio
 from tapsaff import TapsAff
-import voluptuous as vol
 
-from homeassistant.components.binary_sensor import PLATFORM_SCHEMA, BinarySensorEntity
-from homeassistant.const import CONF_NAME
+from homeassistant.components.binary_sensor import (
+    PLATFORM_SCHEMA as BINARY_SENSOR_PLATFORM_SCHEMA,
+    BinarySensorEntity,
+)
+from homeassistant.const import CONF_LOCATION, CONF_NAME
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
 
-CONF_LOCATION = "location"
-
 DEFAULT_NAME = "Taps Aff"
 
 SCAN_INTERVAL = timedelta(minutes=30)
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+PLATFORM_SCHEMA = BINARY_SENSOR_PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_LOCATION): cv.string,
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        probatio.Required(CONF_LOCATION): cv.string,
+        probatio.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     }
 )
 
@@ -54,16 +55,18 @@ class TapsAffSensor(BinarySensorEntity):
         self._name = name
 
     @property
+    @override
     def name(self):
         """Return the name of the sensor."""
         return f"{self._name}"
 
     @property
-    def is_on(self):
+    @override
+    def is_on(self) -> bool:
         """Return true if taps aff."""
         return self.data.is_taps_aff
 
-    def update(self):
+    def update(self) -> None:
         """Get the latest data."""
         self.data.update()
 

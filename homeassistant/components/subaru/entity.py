@@ -1,35 +1,45 @@
-"""Base class for all Subaru Entities."""
-from homeassistant.helpers.entity import DeviceInfo
+"""Base entities for the Subaru integration."""
+
+from typing import Any, override
+
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER, VEHICLE_NAME, VEHICLE_VIN
+from . import get_device_info
+from .const import VEHICLE_VIN
+from .coordinator import SubaruDataUpdateCoordinator
 
 
-class SubaruEntity(CoordinatorEntity):
-    """Representation of a Subaru Entity."""
+class SubaruEntity(Entity):
+    """Base class for Subaru entities: device_info, unique_id, has_entity_name."""
 
-    def __init__(self, vehicle_info, coordinator):
-        """Initialize the Subaru Entity."""
+    _attr_has_entity_name = True
+
+    def __init__(self, vehicle_info: dict[str, Any], unique_id_suffix: str) -> None:
+        """Initialize the entity from the vehicle_info dict."""
+        self.vehicle_info = vehicle_info
+        self.vin: str = vehicle_info[VEHICLE_VIN]
+        self._attr_device_info = get_device_info(vehicle_info)
+        self._attr_unique_id = f"{self.vin}_{unique_id_suffix}"
+
+
+class SubaruCoordinatorEntity(
+    CoordinatorEntity[SubaruDataUpdateCoordinator], SubaruEntity
+):
+    """Base class for coordinator-backed Subaru entities."""
+
+    def __init__(
+        self,
+        vehicle_info: dict[str, Any],
+        coordinator: SubaruDataUpdateCoordinator,
+        unique_id_suffix: str,
+    ) -> None:
+        """Initialize the coordinator-backed entity."""
         super().__init__(coordinator)
-        self.car_name = vehicle_info[VEHICLE_NAME]
-        self.vin = vehicle_info[VEHICLE_VIN]
-        self.entity_type = "entity"
+        SubaruEntity.__init__(self, vehicle_info, unique_id_suffix)
 
     @property
-    def name(self):
-        """Return name."""
-        return f"{self.car_name} {self.entity_type}"
-
-    @property
-    def unique_id(self) -> str:
-        """Return a unique ID."""
-        return f"{self.vin}_{self.entity_type}"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return the device_info of the device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.vin)},
-            manufacturer=MANUFACTURER,
-            name=self.car_name,
-        )
+    @override
+    def available(self) -> bool:
+        """Return if available; also gates on data for this vehicle being present."""
+        return super().available and self.vin in self.coordinator.data

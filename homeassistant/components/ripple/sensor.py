@@ -1,28 +1,29 @@
 """Support for Ripple sensors."""
-from __future__ import annotations
 
 from datetime import timedelta
+from typing import override
 
+import probatio
 from pyripple import get_balance
-import voluptuous as vol
 
-from homeassistant.components.sensor import PLATFORM_SCHEMA, SensorEntity
-from homeassistant.const import ATTR_ATTRIBUTION, CONF_ADDRESS, CONF_NAME
+from homeassistant.components.sensor import (
+    PLATFORM_SCHEMA as SENSOR_PLATFORM_SCHEMA,
+    SensorEntity,
+)
+from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-
-ATTRIBUTION = "Data provided by ripple.com"
 
 DEFAULT_NAME = "Ripple Balance"
 
 SCAN_INTERVAL = timedelta(minutes=5)
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
+PLATFORM_SCHEMA = SENSOR_PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_ADDRESS): cv.string,
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        probatio.Required(CONF_ADDRESS): cv.string,
+        probatio.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     }
 )
 
@@ -43,6 +44,8 @@ def setup_platform(
 class RippleSensor(SensorEntity):
     """Representation of an Ripple.com sensor."""
 
+    _attr_attribution = "Data provided by ripple.com"
+
     def __init__(self, name, address):
         """Initialize the sensor."""
         self._name = name
@@ -51,26 +54,24 @@ class RippleSensor(SensorEntity):
         self._unit_of_measurement = "XRP"
 
     @property
+    @override
     def name(self):
         """Return the name of the sensor."""
         return self._name
 
     @property
+    @override
     def native_value(self):
         """Return the state of the sensor."""
         return self._state
 
     @property
+    @override
     def native_unit_of_measurement(self):
         """Return the unit of measurement this sensor expresses itself in."""
         return self._unit_of_measurement
 
-    @property
-    def extra_state_attributes(self):
-        """Return the state attributes of the sensor."""
-        return {ATTR_ATTRIBUTION: ATTRIBUTION}
-
-    def update(self):
+    def update(self) -> None:
         """Get the latest state of the sensor."""
         if (balance := get_balance(self.address)) is not None:
             self._state = balance

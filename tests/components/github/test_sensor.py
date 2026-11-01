@@ -1,62 +1,70 @@
 """Test GitHub sensor."""
-from unittest.mock import MagicMock, patch
 
-from aiogithubapi import GitHubNotModifiedException
+from unittest.mock import AsyncMock, patch
+
+from freezegun.api import FrozenDateTimeFactory
 import pytest
+from pytest_homeassistant.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+    snapshot_platform,
+)
+from syrupy.assertion import SnapshotAssertion
 
-from homeassistant.components.github.const import DEFAULT_UPDATE_INTERVAL
+from homeassistant.components.github.const import FALLBACK_UPDATE_INTERVAL
+from homeassistant.const import STATE_UNAVAILABLE, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.util import dt
+from homeassistant.helpers import entity_registry as er
 
-from tests.common import MockConfigEntry, async_fire_time_changed
+from . import setup_integration
 
 TEST_SENSOR_ENTITY = "sensor.octocat_hello_world_latest_release"
 
 
-async def test_sensor_updates_with_not_modified_content(
+@pytest.mark.usefixtures("entity_registry_enabled_by_default")
+async def test_all_entities(
     hass: HomeAssistant,
-    init_integration: MockConfigEntry,
-    caplog: pytest.LogCaptureFixture,
+    github_client: AsyncMock,
+    mock_config_entry: MockConfigEntry,
+    entity_registry: er.EntityRegistry,
+    snapshot: SnapshotAssertion,
 ) -> None:
-    """Test the sensor updates by default GitHub sensors."""
-    state = hass.states.get(TEST_SENSOR_ENTITY)
-    assert state.state == "v1.0.0"
-    assert (
-        "Content for octocat/Hello-World with RepositoryReleaseDataUpdateCoordinator not modified"
-        not in caplog.text
-    )
-
-    with patch(
-        "aiogithubapi.namespaces.releases.GitHubReleasesNamespace.list",
-        side_effect=GitHubNotModifiedException,
-    ):
-
-        async_fire_time_changed(hass, dt.utcnow() + DEFAULT_UPDATE_INTERVAL)
-        await hass.async_block_till_done()
-
-        assert (
-            "Content for octocat/Hello-World with RepositoryReleaseDataUpdateCoordinator not modified"
-            in caplog.text
-        )
-    new_state = hass.states.get(TEST_SENSOR_ENTITY)
-    assert state.state == new_state.state
+    """Test all entities."""
+    with patch("homeassistant.components.github.PLATFORMS", [Platform.SENSOR]):
+        await setup_integration(hass, mock_config_entry)
+    await snapshot_platform(hass, entity_registry, snapshot, mock_config_entry.entry_id)
 
 
 async def test_sensor_updates_with_empty_release_array(
     hass: HomeAssistant,
-    init_integration: MockConfigEntry,
+    github_client: AsyncMock,
+    mock_config_entry: MockConfigEntry,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     """Test the sensor updates by default GitHub sensors."""
+    await setup_integration(hass, mock_config_entry)
     state = hass.states.get(TEST_SENSOR_ENTITY)
     assert state.state == "v1.0.0"
 
-    with patch(
-        "aiogithubapi.namespaces.releases.GitHubReleasesNamespace.list",
-        return_value=MagicMock(data=[]),
-    ):
+    github_client.graphql.return_value.data["data"]["repository"]["release"] = None
 
-        async_fire_time_changed(hass, dt.utcnow() + DEFAULT_UPDATE_INTERVAL)
-        await hass.async_block_till_done()
+    freezer.tick(FALLBACK_UPDATE_INTERVAL)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
 
     new_state = hass.states.get(TEST_SENSOR_ENTITY)
-    assert new_state.state == "unavailable"
+    assert new_state.state == STATE_UNAVAILABLE
+
+
+async def test_latest_release_downloads_without_assets(
+    hass: HomeAssistant,
+    github_client: AsyncMock,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """Test the downloads sensor is unavailable when the release has no assets."""
+    release = github_client.graphql.return_value.data["data"]["repository"]["release"]
+    release["assets"]["nodes"] = []
+    await setup_integration(hass, mock_config_entry)
+
+    state = hass.states.get("sensor.octocat_hello_world_latest_release_downloads")
+    assert state.state == STATE_UNAVAILABLE

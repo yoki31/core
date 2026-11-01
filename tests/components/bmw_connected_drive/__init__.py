@@ -1,1 +1,1 @@
-"""Tests for the for the BMW Connected Drive integration."""
+"""Tests for the BMW Connected Drive integration."""

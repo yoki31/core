@@ -1,7 +1,7 @@
 """Support for HomeKit Controller Televisions."""
-from __future__ import annotations
 
 import logging
+from typing import override
 
 from aiohomekit.model.characteristics import (
     CharacteristicsTypes,
@@ -15,51 +15,47 @@ from aiohomekit.utils import clamp_enum_to_char
 from homeassistant.components.media_player import (
     MediaPlayerDeviceClass,
     MediaPlayerEntity,
-)
-from homeassistant.components.media_player.const import (
-    SUPPORT_PAUSE,
-    SUPPORT_PLAY,
-    SUPPORT_SELECT_SOURCE,
-    SUPPORT_STOP,
+    MediaPlayerEntityFeature,
+    MediaPlayerState,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    STATE_IDLE,
-    STATE_OK,
-    STATE_PAUSED,
-    STATE_PLAYING,
-    STATE_PROBLEM,
-)
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import KNOWN_DEVICES, HomeKitEntity
+from .connection import HKDevice
+from .const import KNOWN_DEVICES
+from .entity import HomeKitEntity
 
 _LOGGER = logging.getLogger(__name__)
 
 
 HK_TO_HA_STATE = {
-    CurrentMediaStateValues.PLAYING: STATE_PLAYING,
-    CurrentMediaStateValues.PAUSED: STATE_PAUSED,
-    CurrentMediaStateValues.STOPPED: STATE_IDLE,
+    CurrentMediaStateValues.PLAYING: MediaPlayerState.PLAYING,
+    CurrentMediaStateValues.PAUSED: MediaPlayerState.PAUSED,
+    CurrentMediaStateValues.STOPPED: MediaPlayerState.IDLE,
 }
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Homekit television."""
-    hkid = config_entry.data["AccessoryPairingID"]
-    conn = hass.data[KNOWN_DEVICES][hkid]
+    hkid: str = config_entry.data["AccessoryPairingID"]
+    conn: HKDevice = hass.data[KNOWN_DEVICES][hkid]
 
     @callback
     def async_add_service(service: Service) -> bool:
         if service.type != ServicesTypes.TELEVISION:
             return False
         info = {"aid": service.accessory.aid, "iid": service.iid}
-        async_add_entities([HomeKitTelevision(conn, info)], True)
+        entity = HomeKitTelevision(conn, info)
+        conn.async_migrate_unique_id(
+            entity.old_unique_id, entity.unique_id, Platform.MEDIA_PLAYER
+        )
+        async_add_entities([entity])
         return True
 
     conn.add_listener(async_add_service)
@@ -70,6 +66,7 @@ class HomeKitTelevision(HomeKitEntity, MediaPlayerEntity):
 
     _attr_device_class = MediaPlayerDeviceClass.TV
 
+    @override
     def get_characteristic_types(self) -> list[str]:
         """Define the homekit characteristics the entity cares about."""
         return [
@@ -84,28 +81,29 @@ class HomeKitTelevision(HomeKitEntity, MediaPlayerEntity):
         ]
 
     @property
-    def supported_features(self) -> int:
+    @override
+    def supported_features(self) -> MediaPlayerEntityFeature:
         """Flag media player features that are supported."""
-        features = 0
+        features = MediaPlayerEntityFeature.TURN_OFF | MediaPlayerEntityFeature.TURN_ON
 
         if self.service.has(CharacteristicsTypes.ACTIVE_IDENTIFIER):
-            features |= SUPPORT_SELECT_SOURCE
+            features |= MediaPlayerEntityFeature.SELECT_SOURCE
 
         if self.service.has(CharacteristicsTypes.TARGET_MEDIA_STATE):
             if TargetMediaStateValues.PAUSE in self.supported_media_states:
-                features |= SUPPORT_PAUSE
+                features |= MediaPlayerEntityFeature.PAUSE
 
             if TargetMediaStateValues.PLAY in self.supported_media_states:
-                features |= SUPPORT_PLAY
+                features |= MediaPlayerEntityFeature.PLAY
 
             if TargetMediaStateValues.STOP in self.supported_media_states:
-                features |= SUPPORT_STOP
+                features |= MediaPlayerEntityFeature.STOP
 
         if (
             self.service.has(CharacteristicsTypes.REMOTE_KEY)
             and RemoteKeyValues.PLAY_PAUSE in self.supported_remote_keys
         ):
-            features |= SUPPORT_PAUSE | SUPPORT_PLAY
+            features |= MediaPlayerEntityFeature.PAUSE | MediaPlayerEntityFeature.PLAY
 
         return features
 
@@ -131,6 +129,7 @@ class HomeKitTelevision(HomeKitEntity, MediaPlayerEntity):
         )
 
     @property
+    @override
     def source_list(self) -> list[str]:
         """List of all input sources for this television."""
         sources = []
@@ -149,6 +148,7 @@ class HomeKitTelevision(HomeKitEntity, MediaPlayerEntity):
         return sources
 
     @property
+    @override
     def source(self) -> str | None:
         """Name of the current input source."""
         active_identifier = self.service.value(CharacteristicsTypes.ACTIVE_IDENTIFIER)
@@ -163,25 +163,38 @@ class HomeKitTelevision(HomeKitEntity, MediaPlayerEntity):
             characteristics={CharacteristicsTypes.IDENTIFIER: active_identifier},
             parent_service=this_tv,
         )
+        assert input_source
         char = input_source[CharacteristicsTypes.CONFIGURED_NAME]
         return char.value
 
     @property
-    def state(self) -> str:
+    @override
+    def state(self) -> MediaPlayerState:
         """State of the tv."""
         active = self.service.value(CharacteristicsTypes.ACTIVE)
         if not active:
-            return STATE_PROBLEM
+            return MediaPlayerState.OFF
 
         homekit_state = self.service.value(CharacteristicsTypes.CURRENT_MEDIA_STATE)
         if homekit_state is not None:
-            return HK_TO_HA_STATE.get(homekit_state, STATE_OK)
+            return HK_TO_HA_STATE.get(homekit_state, MediaPlayerState.ON)
 
-        return STATE_OK
+        return MediaPlayerState.ON
 
+    @override
+    async def async_turn_on(self) -> None:
+        """Turn the tv on."""
+        await self.async_put_characteristics({CharacteristicsTypes.ACTIVE: 1})
+
+    @override
+    async def async_turn_off(self) -> None:
+        """Turn the tv off."""
+        await self.async_put_characteristics({CharacteristicsTypes.ACTIVE: 0})
+
+    @override
     async def async_media_play(self) -> None:
         """Send play command."""
-        if self.state == STATE_PLAYING:
+        if self.state == MediaPlayerState.PLAYING:
             _LOGGER.debug("Cannot play while already playing")
             return
 
@@ -194,9 +207,10 @@ class HomeKitTelevision(HomeKitEntity, MediaPlayerEntity):
                 {CharacteristicsTypes.REMOTE_KEY: RemoteKeyValues.PLAY_PAUSE}
             )
 
+    @override
     async def async_media_pause(self) -> None:
         """Send pause command."""
-        if self.state == STATE_PAUSED:
+        if self.state == MediaPlayerState.PAUSED:
             _LOGGER.debug("Cannot pause while already paused")
             return
 
@@ -209,9 +223,10 @@ class HomeKitTelevision(HomeKitEntity, MediaPlayerEntity):
                 {CharacteristicsTypes.REMOTE_KEY: RemoteKeyValues.PLAY_PAUSE}
             )
 
+    @override
     async def async_media_stop(self) -> None:
         """Send stop command."""
-        if self.state == STATE_IDLE:
+        if self.state == MediaPlayerState.IDLE:
             _LOGGER.debug("Cannot stop when already idle")
             return
 
@@ -220,6 +235,7 @@ class HomeKitTelevision(HomeKitEntity, MediaPlayerEntity):
                 {CharacteristicsTypes.TARGET_MEDIA_STATE: TargetMediaStateValues.STOP}
             )
 
+    @override
     async def async_select_source(self, source: str) -> None:
         """Switch to a different media source."""
         this_accessory = self._accessory.entity_map.aid(self._aid)

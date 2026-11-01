@@ -1,9 +1,12 @@
 {
   "domain": "trafikverket_train",
   "name": "Trafikverket Train",
+  "categories": ["vehicles_transport.public_transport"],
+  "codeowners": ["@gjohansson-ST"],
+  "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/trafikverket_train",
-  "requirements": ["pytrafikverket==0.1.6.2"],
-  "codeowners": ["@endor-force", "@gjohansson-ST"],
+  "integration_type": "service",
   "iot_class": "cloud_polling",
-  "loggers": ["pytrafikverket"]
+  "loggers": ["pytrafikverket"],
+  "requirements": ["pytrafikverket==2.0.0"]
 }
